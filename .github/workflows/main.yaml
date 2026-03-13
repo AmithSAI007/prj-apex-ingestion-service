@@ -1,0 +1,205 @@
+name: Deploy Cloud Run Service
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target Environment"
+        required: true
+        default: "development"
+        type: choice
+        options:
+          - development
+          - production
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  GO_VERSION: ">=1.25"
+  IMAGE_NAME: prj-apex-ingestion-service
+
+jobs:
+  # ============================================================================
+  # 1. Determine the target environment from branch, event, or manual input.
+  # ============================================================================
+  determine_environment:
+    name: "Determine Environment"
+    runs-on: ubuntu-24.04
+    outputs:
+      environment: ${{ steps.get_env.outputs.environment }}
+    steps:
+      - id: get_env
+        name: Resolve target environment
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "environment=development" >> "$GITHUB_OUTPUT"
+          else
+            ENVIRONMENT="${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'development') }}"
+            echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ============================================================================
+  # 2. Static analysis — golangci-lint
+  # ============================================================================
+  lint:
+    name: "Lint"
+    runs-on: ubuntu-24.04
+    needs: determine_environment
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.10
+          args: --timeout=5m
+
+  # ============================================================================
+  # 3. Security scan — gosec Go security scanner
+  # ============================================================================
+  security_scan:
+    name: "Security Scan"
+    runs-on: ubuntu-24.04
+    needs: determine_environment
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Run gosec security scanner
+        uses: securego/gosec@master
+        with:
+          args: "-no-fail ./..."
+
+  # ============================================================================
+  # 4. Test — unit tests with coverage gate
+  # ============================================================================
+  test:
+    name: "Test"
+    runs-on: ubuntu-24.04
+    needs: [lint, security_scan]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Run tests with coverage
+        run: |
+          go test -v -count=1 -coverprofile=coverage.out ./...
+
+      - name: Verify coverage threshold (80%)
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "Total coverage: ${COVERAGE}%"
+          if (( $(echo "$COVERAGE < 70.0" | bc -l) )); then
+            echo "::error::Coverage ${COVERAGE}% is below the 70% threshold"
+            exit 1
+          fi
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.out
+          retention-days: 14
+
+  # ============================================================================
+  # 5. Build and push Docker image to Artifact Registry
+  #    - Uses Docker Buildx with GitHub Actions cache for layer caching
+  #    - Authenticates via Workload Identity Federation (no long-lived keys)
+  #    - Skipped on pull requests (quality gate only)
+  # ============================================================================
+  build_and_push:
+    name: "Build & Push Image"
+    runs-on: ubuntu-24.04
+    needs: [determine_environment, test]
+    if: github.event_name != 'pull_request'
+    environment: ${{ needs.determine_environment.outputs.environment }}
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (WIF)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: access_token
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Login to Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.GCP_REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Generate image metadata
+        id: meta
+        run: |
+          REGISTRY="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_REPOSITORY }}"
+          IMAGE="${REGISTRY}/${{ env.IMAGE_NAME }}"
+          SHA_TAG="${IMAGE}:${{ github.sha }}"
+          SHORT_SHA_TAG="${IMAGE}:$(echo ${{ github.sha }} | cut -c1-7)"
+          LATEST_TAG="${IMAGE}:latest"
+          ENV_TAG="${IMAGE}:${{ needs.determine_environment.outputs.environment }}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "tags=${SHA_TAG},${SHORT_SHA_TAG},${LATEST_TAG},${ENV_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true

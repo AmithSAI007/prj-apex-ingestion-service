@@ -191,6 +191,7 @@ jobs:
           ENV_TAG="${IMAGE}:${{ needs.determine_environment.outputs.environment }}"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "tags=${SHA_TAG},${SHORT_SHA_TAG},${LATEST_TAG},${ENV_TAG}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker image
         id: build
@@ -203,3 +204,33 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: true
           sbom: true
+
+      - name: Create Terraform Config
+        run: |
+          cat <<EOF > deploy.tfvars.json
+          {
+            "container_image": "${{ steps.build.outputs.short_sha }}"
+          }
+          EOF
+
+      - name: Upload Config
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-config
+          path: deploy.tfvars.json
+          retention-days: 1
+
+  call-reusable-terraform:
+    name: "Execute Terraform Core Logic"
+    needs: build-and-push
+    uses: AmithSAI007/prj-apex-infrastructure/.github/workflows/reusable-terraform-core.yaml@develop
+    with:
+      environment: ${{ needs.determine_environment.outputs.environment }}
+      terraform_directory: ${{ needs.determine_environment.outputs.dir }}
+      is_pull_request: ${{ github.event_name == 'pull_request' }}
+      terraform_args: "-var=container_image=${{ needs.build-and-push.outputs.short_sha }}"
+    secrets:
+      PROJECT_ID: ${{ secrets.PROJECT_ID }}
+      WORKLOAD_IDENTITY: ${{ secrets.WORKLOAD_IDENTITY }}
+      SERVICE_ACCOUNT: ${{ secrets.SERVICE_ACCOUNT }}
+      PROJECT_REGION: ${{ secrets.PROJECT_REGION }}

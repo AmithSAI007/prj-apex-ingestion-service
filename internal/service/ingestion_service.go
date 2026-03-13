@@ -268,7 +268,7 @@ func (s *IngestionService) ProcessUpload(ctx context.Context, metadata *dto.Meta
 
 func (s *IngestionService) validateEvent(ctx context.Context, metadata *dto.MetaData) error {
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-ingestion-service")
-	ctx, span := tracer.Start(ctx, "IngestionService.validateEvent",
+	_, span := tracer.Start(ctx, "IngestionService.validateEvent",
 		otrace.WithSpanKind(otrace.SpanKindClient),
 		otrace.WithAttributes(
 			attribute.String("eventId", metadata.ID),
@@ -321,7 +321,7 @@ func (s *IngestionService) validateEvent(ctx context.Context, metadata *dto.Meta
 
 func (s *IngestionService) validateObjectPath(ctx context.Context, objectName string, eventId string, traceId string) (string, string, error) {
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-ingestion-service")
-	ctx, span := tracer.Start(ctx, "IngestionService.validateObjectPath",
+	_, span := tracer.Start(ctx, "IngestionService.validateObjectPath",
 		otrace.WithSpanKind(otrace.SpanKindClient),
 		otrace.WithAttributes(
 			attribute.String("eventId", eventId),
@@ -399,7 +399,7 @@ func (s *IngestionService) validateObjectPath(ctx context.Context, objectName st
 
 func (s *IngestionService) validateBucket(ctx context.Context, bucket string, eventId string, traceId string) error {
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-ingestion-service")
-	ctx, span := tracer.Start(ctx, "IngestionService.validateBucket",
+	_, span := tracer.Start(ctx, "IngestionService.validateBucket",
 		otrace.WithSpanKind(otrace.SpanKindClient),
 		otrace.WithAttributes(
 			attribute.String("eventId", eventId),
@@ -516,7 +516,7 @@ func (s *IngestionService) validateFile(ctx context.Context, eventData *dto.GCSO
 		attribute.Int("headerSize", len(header)),
 	))
 
-	ctx, magicByteSpan := tracer.Start(ctx, "IngestionService.ValidateMagicBytes", otrace.WithSpanKind(otrace.SpanKindClient))
+	_, magicByteSpan := tracer.Start(ctx, "IngestionService.ValidateMagicBytes", otrace.WithSpanKind(otrace.SpanKindClient))
 	detectedFormat, err := s.validator.ValidateMagicBytes(header, s.cfg.AllowedVideoFormats)
 	magicByteSpan.End()
 	if err != nil {

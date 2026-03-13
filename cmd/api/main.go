@@ -34,7 +34,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	// Create a root context for the application lifecycle.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -56,19 +56,19 @@ func main() {
 	if err != nil {
 		logger.Fatal("Failed to initialize GCS client", zap.Error(err))
 	}
-	defer gcsClient.Close()
+	defer func() { _ = gcsClient.Close() }()
 
 	cloudTasksClient, err := platform.NewCloudTask(ctx)
 	if err != nil {
 		logger.Fatal("Failed to initialize Cloud Tasks client", zap.Error(err))
 	}
-	defer cloudTasksClient.Close()
+	defer func() { _ = cloudTasksClient.Close() }()
 
 	firestoreClient, err := platform.NewClient(ctx, cfg.GCPProjectID)
 	if err != nil {
 		logger.Fatal("Failed to initialize Firestore client", zap.Error(err))
 	}
-	defer firestoreClient.Close()
+	defer func() { _ = firestoreClient.Close() }()
 
 	storageService := repository.NewStorageService(gcsClient.Client(), logger)
 	firestoreRepo := repository.NewFirestoreRepo(logger, firestoreClient.Client(), cfg.FirestoreCollectionName)
@@ -79,7 +79,7 @@ func main() {
 	if err != nil {
 		logger.Fatal("Failed to initialize Pub/Sub subscriber", zap.Error(err))
 	}
-	defer subscriber.Close()
+	defer func() { _ = subscriber.Close() }()
 
 	sigch := make(chan os.Signal, 1)
 	signal.Notify(sigch, syscall.SIGINT, syscall.SIGTERM)
@@ -89,7 +89,7 @@ func main() {
 	healthServer := &http.Server{Addr: cfg.HttpPort}
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	})
 
 	wg.Go(func() {
@@ -112,7 +112,7 @@ func main() {
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
-	healthServer.Shutdown(shutdownCtx)
+	_ = healthServer.Shutdown(shutdownCtx)
 
 	doneCh := make(chan struct{})
 	go func() {

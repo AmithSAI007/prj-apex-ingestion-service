@@ -86,7 +86,7 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	healthServer := &http.Server{Addr: cfg.HttpPort}
+	healthServer := &http.Server{Addr: cfg.HttpPort, ReadTimeout: 5 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))

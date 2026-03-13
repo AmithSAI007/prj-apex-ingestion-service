@@ -4,11 +4,11 @@ import "errors"
 
 var (
 	ErrPathInjection       = errors.New("potential path injection detected in GCS object path")
-	ErrInvalidObjectPath   = errors.New("GCS object name doesn't match {userId}/{videoId}/{fileName} pattern")
+	ErrInvalidObjectPath   = errors.New("gcs object name doesn't match {userId}/{videoId}/{fileName} pattern")
 	ErrInvalidUUID         = errors.New("value is not a valid UUID")
-	ErrUnexpectedEventType = errors.New("CloudEvent type is not object.finalized")
-	ErrStaleEvent          = errors.New("CloudEvent timestamp exceeds the allowed age threshold")
-	ErrUnexpectedBucket    = errors.New("Event came from wrong bucket")
+	ErrUnexpectedEventType = errors.New("cloudEvent type is not object.finalized")
+	ErrStaleEvent          = errors.New("cloudEvent timestamp exceeds the allowed age threshold")
+	ErrUnexpectedBucket    = errors.New("event came from wrong bucket")
 	ErrFileTooSmall        = errors.New("file below minimum size threshold")
 	ErrFileTooLarge        = errors.New("file exceeds maximum size threshold")
 	ErrUnsupportedFormat   = errors.New("magic bytes doesn't match expected video format")

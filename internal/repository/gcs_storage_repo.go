@@ -79,7 +79,7 @@ func (s *StorageService) ReadObjectHeader(ctx context.Context, eventId, traceId,
 		return nil, fmt.Errorf("failed to open GCS object: gs://%s/%s: %w", objectName, bucket, err)
 	}
 
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	header, err := io.ReadAll(rc)
 	if err != nil {

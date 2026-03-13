@@ -49,9 +49,11 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" == "pull_request" ]; then
             echo "environment=development" >> "$GITHUB_OUTPUT"
+            echo "dir=./terraform/environments/development" >> $GITHUB_OUTPUT
           else
             ENVIRONMENT="${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'development') }}"
             echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
+            echo "dir=./terraform/environments/$ENVIRONMENT" >> $GITHUB_OUTPUT
           fi
 
   # ============================================================================

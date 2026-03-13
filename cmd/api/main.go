@@ -5,23 +5,19 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/AmithSAI007/prj-apex-ingestion-service/api"
-	"github.com/AmithSAI007/prj-apex-ingestion-service/api/handler"
-	"github.com/AmithSAI007/prj-apex-ingestion-service/api/middleware"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/config"
+	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/handler"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/platform"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/repository"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/service"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/validation"
-	"github.com/gin-gonic/gin"
 
-	// "go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
-
-	// "go.opentelemetry.io/otel"
 	"go.uber.org/zap"
 )
 
@@ -34,13 +30,11 @@ func main() {
 	}
 
 	// Initialize the structured logger (JSON in production, console in development).
-	logger, err := config.NewLogger()
+	logger, err := config.NewLogger(cfg.AppEnv)
 	if err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
-	defer func() {
-		_ = logger.Sync()
-	}()
+	defer logger.Sync()
 
 	// Create a root context for the application lifecycle.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -52,83 +46,84 @@ func main() {
 		logger.Fatal("Failed to initialize tracer", zap.Error(err))
 	}
 	defer func() {
-		err = errors.Join(err, otelShutdown(ctx))
+		if err := otelShutdown(ctx); err != nil {
+			logger.Error("Failed to shutdown tracer", zap.Error(err))
+		}
 	}()
-
-	// Create a named tracer for this application's spans.
-	// tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-upload-platform")
-
-	router := gin.New()
-	router.MaxMultipartMemory = 32 << 20        // 32 MiB
-	router.Use(gin.Recovery())                  // Recover from panics and return 500.
-	router.Use(middleware.RequestContext())     // Inject trace/request IDs.
-	router.Use(middleware.ErrorHandler(logger)) // Log unhandled errors.
-	// router.Use(otelgin.Middleware(cfg.OTEL_SERVICE_NAME)) // OTel HTTP instrumentation.
 
 	validator := validation.NewValidator(logger)
 	gcsClient, err := platform.NewGCSClient(ctx)
 	if err != nil {
 		logger.Fatal("Failed to initialize GCS client", zap.Error(err))
 	}
-	defer func() {
-		err = errors.Join(err, gcsClient.Close())
-	}()
+	defer gcsClient.Close()
 
 	cloudTasksClient, err := platform.NewCloudTask(ctx)
 	if err != nil {
 		logger.Fatal("Failed to initialize Cloud Tasks client", zap.Error(err))
 	}
-	defer func() {
-		err = errors.Join(err, cloudTasksClient.Close())
-	}()
+	defer cloudTasksClient.Close()
 
 	firestoreClient, err := platform.NewClient(ctx, cfg.GCPProjectID)
 	if err != nil {
 		logger.Fatal("Failed to initialize Firestore client", zap.Error(err))
 	}
-	defer func() {
-		err = errors.Join(err, firestoreClient.Close())
-	}()
+	defer firestoreClient.Close()
 
 	storageService := repository.NewStorageService(gcsClient.Client(), logger)
-	firestoreRepo := repository.NewFirestoreRepo(logger, firestoreClient.Client(), "videos")
+	firestoreRepo := repository.NewFirestoreRepo(logger, firestoreClient.Client(), cfg.FirestoreCollectionName)
 	cloudTasksRepo := repository.NewTasksRepo(logger, cloudTasksClient.Client(), cfg)
 	ingestionService := service.NewIngestionService(logger, validator, cfg, storageService, firestoreRepo, cloudTasksRepo)
-
 	eventHandler := handler.NewEventHandler(logger, ingestionService)
-
-	// Register all API routes.
-	handlers := &api.HandlerRegistry{
-		EventHandler: eventHandler,
+	subscriber, err := platform.NewSubscriber(ctx, logger, cfg.GCPProjectID, cfg.PubSubSubscriptionID, cfg.MaxOutstandingMessages)
+	if err != nil {
+		logger.Fatal("Failed to initialize Pub/Sub subscriber", zap.Error(err))
 	}
+	defer subscriber.Close()
 
-	api.SetupRoutes(router, handlers)
+	sigch := make(chan os.Signal, 1)
+	signal.Notify(sigch, syscall.SIGINT, syscall.SIGTERM)
 
-	svr := &http.Server{
-		Addr:              cfg.HttpPort,
-		Handler:           router,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	var wg sync.WaitGroup
 
-	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	healthServer := &http.Server{Addr: cfg.HttpPort}
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
 
-	go func() {
-		logger.Info("Starting server", zap.String("port", cfg.HttpPort))
-		if err := svr.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Fatal("Server failed", zap.Error(err))
+	wg.Go(func() {
+		logger.Info("Starting health check server", zap.String("port", cfg.HttpPort))
+		if err := healthServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Fatal("Health check server failed", zap.Error(err))
 		}
+	})
+
+	wg.Go(func() {
+		if err := subscriber.Start(ctx, eventHandler.Handle); err != nil {
+			logger.Fatal("Pub/Sub subscriber failed", zap.Error(err))
+		}
+	})
+
+	sig := <-sigch
+	logger.Info("Received shutdown signal", zap.String("signal", sig.String()))
+
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	healthServer.Shutdown(shutdownCtx)
+
+	doneCh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(doneCh)
 	}()
 
-	<-ctx.Done()
-	logger.Info("Shutting down server...")
-
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
-
-	if err := svr.Shutdown(shutdownCtx); err != nil {
-		logger.Fatal("Server forced to shutdown", zap.Error(err))
+	select {
+	case <-doneCh:
+		logger.Info("Shutdown complete")
+	case <-shutdownCtx.Done():
+		logger.Warn("Shutdown timed out, forcing exit")
 	}
-
-	logger.Info("Server exiting")
 }

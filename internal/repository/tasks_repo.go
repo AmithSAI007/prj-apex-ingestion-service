@@ -8,8 +8,8 @@ import (
 
 	"cloud.google.com/go/cloudtasks/apiv2"
 	cloudtaskspb "cloud.google.com/go/cloudtasks/apiv2/cloudtaskspb"
-	"github.com/AmithSAI007/prj-apex-ingestion-service/api/dto"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/config"
+	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/dto"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -41,7 +41,9 @@ func NewTasksRepo(logger *zap.Logger, client *cloudtasks.Client, cfg *config.Con
 func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.TranscoderServicePayload) error {
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-ingestion-service")
 	ctx, span := tracer.Start(ctx, "CloudTasksRepo.EnqueueTranscodeTask",
+		otrace.WithSpanKind(otrace.SpanKindClient),
 		otrace.WithAttributes(
+			attribute.String("operation", "EnqueueTranscodeTask"),
 			attribute.String("eventId", payload.EventID),
 			attribute.String("traceId", payload.TraceID),
 			attribute.String("userId", payload.UserID),
@@ -60,6 +62,7 @@ func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.
 		r.logger.Error("Failed to marshal task payload",
 			zap.String("eventId", payload.EventID),
 			zap.String("traceId", payload.TraceID),
+			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("userId", payload.UserID),
 			zap.String("videoId", payload.VideoID),
 			zap.String("severity", "ERROR"),
@@ -73,7 +76,11 @@ func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.
 
 	taskName := fmt.Sprintf("projects/%s/locations/%s/queues/%s/tasks/%s", r.cfg.GCPProjectID, r.cfg.ProjectRegion, r.cfg.CloudTasksQueueName, payload.VideoID)
 
-	span.SetAttributes(attribute.String("taskName", taskName))
+	span.SetAttributes(
+		attribute.String("taskName", taskName),
+		attribute.String("queueName", r.cfg.CloudTasksQueueName),
+		attribute.String("targetUrl", r.cfg.TranscoderServiceUrl),
+	)
 
 	req := &cloudtaskspb.CreateTaskRequest{
 		Parent: r.cfg.CloudTasksQueuePath,
@@ -104,6 +111,14 @@ func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.
 		span.AddEvent("createTask.failed", otrace.WithAttributes(
 			attribute.String("error", err.Error()),
 		))
+		r.logger.Error("Failed to create Cloud Task",
+			zap.String("eventId", payload.EventID),
+			zap.String("traceId", payload.TraceID),
+			zap.String("spanId", span.SpanContext().SpanID().String()),
+			zap.String("userId", payload.UserID),
+			zap.String("videoId", payload.VideoID),
+			zap.String("severity", "ERROR"),
+			zap.Error(err))
 		return r.classifyError(err, payload)
 	}
 
@@ -111,9 +126,10 @@ func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.
 		attribute.String("taskName", resp.GetName()),
 	))
 
-	r.logger.Info("Successfully created Cloud Run task",
+	r.logger.Info("Successfully created Cloud Task",
 		zap.String("eventId", payload.EventID),
 		zap.String("traceId", payload.TraceID),
+		zap.String("spanId", span.SpanContext().SpanID().String()),
 		zap.String("userId", payload.UserID),
 		zap.String("videoId", payload.VideoID),
 		zap.String("taskName", resp.GetName()))

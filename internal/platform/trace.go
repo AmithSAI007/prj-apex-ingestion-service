@@ -3,6 +3,8 @@ package platform
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/config"
 	"go.opentelemetry.io/contrib/detectors/gcp"
@@ -10,29 +12,135 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/oauth"
 
-	"go.opentelemetry.io/otel/sdk/resource"
-	"go.opentelemetry.io/otel/sdk/trace"
+	sdkresource "go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-// InitTracer sets up the OpenTelemetry tracing pipeline for the application.
-// It configures:
-//   - W3C TraceContext and Baggage propagators for distributed tracing.
-//   - An OTLP gRPC exporter authenticated with GCP Application Default Credentials.
-//   - A TracerProvider with AlwaysSample sampler and batch span export.
-//   - Resource attributes including service name, SDK language, and GCP project.
-//
-// Returns a shutdown function that must be called during application teardown
-// to flush buffered spans. Returns an error if the exporter or credentials
-// cannot be initialized.
+const (
+	GoogClientTraceparentKey = "googclient_traceparent"
+	cloudTraceContextKey     = "X-Cloud-Trace-Context"
+)
+
+type GoogleTraceContextPropagator struct{}
+
+func (p *GoogleTraceContextPropagator) Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
+	span := trace.SpanFromContext(ctx)
+	if !span.SpanContext().IsSampled() {
+		return
+	}
+
+	traceID := span.SpanContext().TraceID().String()
+	spanID := span.SpanContext().SpanID().String()
+
+	traceID = strings.ReplaceAll(traceID, "-", "")
+	spanID = strings.ReplaceAll(spanID, "-", "")
+
+	carrier.Set(GoogClientTraceparentKey, fmt.Sprintf("00-%s-%s-01", traceID, spanID))
+	carrier.Set(cloudTraceContextKey, fmt.Sprintf("%s/%s;o=1", traceID, spanID))
+}
+
+func (p *GoogleTraceContextPropagator) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
+	traceparent := carrier.Get(GoogClientTraceparentKey)
+	if traceparent == "" {
+		traceparent = carrier.Get(cloudTraceContextKey)
+		if traceparent != "" {
+			return p.extractFromCloudTraceContext(ctx, traceparent)
+		}
+		return ctx
+	}
+
+	return p.extractFromGoogClientTraceparent(ctx, traceparent)
+}
+
+func (p *GoogleTraceContextPropagator) extractFromGoogClientTraceparent(ctx context.Context, traceparent string) context.Context {
+	parts := strings.Split(traceparent, "-")
+	if len(parts) < 4 {
+		return ctx
+	}
+
+	version := parts[0]
+	if version != "00" {
+		return ctx
+	}
+
+	traceIDHex := parts[1]
+	spanIDHex := parts[2]
+
+	if len(traceIDHex) != 32 || len(spanIDHex) != 16 {
+		return ctx
+	}
+
+	traceID, err := trace.TraceIDFromHex(traceIDHex)
+	if err != nil {
+		return ctx
+	}
+
+	spanID, err := trace.SpanIDFromHex(spanIDHex)
+	if err != nil {
+		return ctx
+	}
+
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceState: trace.TraceState{},
+	})
+
+	return trace.ContextWithSpanContext(ctx, sc)
+}
+
+func (p *GoogleTraceContextPropagator) extractFromCloudTraceContext(ctx context.Context, header string) context.Context {
+	parts := strings.Split(header, ";")
+	if len(parts) == 0 {
+		return ctx
+	}
+
+	traceParts := strings.Split(parts[0], "/")
+	if len(traceParts) < 2 {
+		return ctx
+	}
+
+	traceIDHex := traceParts[0]
+	spanIDHex := traceParts[1]
+
+	if len(traceIDHex) != 32 || len(spanIDHex) != 16 {
+		return ctx
+	}
+
+	traceID, err := trace.TraceIDFromHex(traceIDHex)
+	if err != nil {
+		return ctx
+	}
+
+	spanID, err := trace.SpanIDFromHex(spanIDHex)
+	if err != nil {
+		return ctx
+	}
+
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceState: trace.TraceState{},
+	})
+
+	return trace.ContextWithSpanContext(ctx, sc)
+}
+
+func (p *GoogleTraceContextPropagator) Fields() []string {
+	return []string{GoogClientTraceparentKey, cloudTraceContextKey}
+}
+
+var _ propagation.TextMapPropagator = (*GoogleTraceContextPropagator)(nil)
+
 func InitTracer(cfg *config.Config, ctx context.Context) (func(context.Context) error, error) {
 
 	var shutdownFuncs []func(context.Context) error
 	var err error
 
-	// shutdown calls all registered cleanup functions and aggregates errors.
 	shutdown := func(ctx context.Context) error {
 		var err error
 		for _, fn := range shutdownFuncs {
@@ -42,30 +150,26 @@ func InitTracer(cfg *config.Config, ctx context.Context) (func(context.Context) 
 		return err
 	}
 
-	// handleErr is a convenience wrapper that joins the new error with shutdown cleanup.
 	handleErr := func(inErr error) {
 		err = errors.Join(inErr, shutdown(ctx))
 	}
 
 	serviceName := cfg.OTEL_SERVICE_NAME
 
-	// Configure composite propagator: W3C TraceContext for span context propagation
-	// and Baggage for forwarding custom key-value pairs across service boundaries.
 	prop := propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
+		&GoogleTraceContextPropagator{},
 		propagation.Baggage{},
 	)
 
 	otel.SetTextMapPropagator(prop)
 
-	// Obtain GCP Application Default Credentials for authenticating the OTLP exporter.
 	creds, err := oauth.NewApplicationDefault(ctx)
 	if err != nil {
 		handleErr(err)
 		return shutdown, err
 	}
 
-	// Create the OTLP gRPC trace exporter that ships spans to the configured collector.
 	exporter, err := otlptracegrpc.New(
 		ctx,
 		otlptracegrpc.WithDialOption(grpc.WithPerRPCCredentials(creds)))
@@ -75,13 +179,11 @@ func InitTracer(cfg *config.Config, ctx context.Context) (func(context.Context) 
 		return shutdown, err
 	}
 
-	// Build the resource that identifies this service in the telemetry backend.
-	// Includes automatic GCP metadata detection (project, zone, instance).
-	resources, err := resource.New(
+	resources, err := sdkresource.New(
 		context.Background(),
-		resource.WithTelemetrySDK(),
-		resource.WithDetectors(gcp.NewDetector()),
-		resource.WithAttributes(
+		sdkresource.WithTelemetrySDK(),
+		sdkresource.WithDetectors(gcp.NewDetector()),
+		sdkresource.WithAttributes(
 			attribute.String("service.name", serviceName),
 			attribute.String("gcp.project.id", cfg.GCPProjectID),
 		),
@@ -91,11 +193,9 @@ func InitTracer(cfg *config.Config, ctx context.Context) (func(context.Context) 
 		return shutdown, err
 	}
 
-	// Create and register the global TracerProvider.
-	// AlwaysSample is used here; in production, consider a ratio-based sampler.
-	tp := trace.NewTracerProvider(
-		trace.WithSampler(trace.AlwaysSample()),
-		trace.WithBatcher(exporter), trace.WithResource(resources))
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithBatcher(exporter), sdktrace.WithResource(resources))
 
 	shutdownFuncs = append(shutdownFuncs, tp.Shutdown)
 	otel.SetTracerProvider(tp)

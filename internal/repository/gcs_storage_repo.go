@@ -28,7 +28,9 @@ func NewStorageService(client *storage.Client, logger *zap.Logger) *StorageServi
 func (s *StorageService) ReadObjectHeader(ctx context.Context, eventId, traceId, userId, videoId, bucket, objectName string, numBytes int64) ([]byte, error) {
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-ingestion-service")
 	ctx, span := tracer.Start(ctx, "StorageService.ReadObjectHeader",
+		otrace.WithSpanKind(otrace.SpanKindClient),
 		otrace.WithAttributes(
+			attribute.String("operation", "ReadObjectHeader"),
 			attribute.String("eventId", eventId),
 			attribute.String("traceId", traceId),
 			attribute.String("userId", userId),
@@ -50,6 +52,7 @@ func (s *StorageService) ReadObjectHeader(ctx context.Context, eventId, traceId,
 			s.logger.Error("GCS object not found",
 				zap.String("eventId", eventId),
 				zap.String("traceId", traceId),
+				zap.String("spanId", span.SpanContext().SpanID().String()),
 				zap.String("userId", userId),
 				zap.String("videoId", videoId),
 				zap.String("severity", "ERROR"),
@@ -66,6 +69,7 @@ func (s *StorageService) ReadObjectHeader(ctx context.Context, eventId, traceId,
 		s.logger.Error("Failed to open GCS object",
 			zap.String("eventId", eventId),
 			zap.String("traceId", traceId),
+			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
 			zap.String("severity", "ERROR"),
@@ -87,6 +91,7 @@ func (s *StorageService) ReadObjectHeader(ctx context.Context, eventId, traceId,
 		s.logger.Error("Failed to read GCS object header",
 			zap.String("eventId", eventId),
 			zap.String("traceId", traceId),
+			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
 			zap.String("severity", "ERROR"),
@@ -99,6 +104,16 @@ func (s *StorageService) ReadObjectHeader(ctx context.Context, eventId, traceId,
 	span.AddEvent("header.read", otrace.WithAttributes(
 		attribute.Int("headerSize", len(header)),
 	))
+
+	s.logger.Info("Successfully read GCS object header",
+		zap.String("eventId", eventId),
+		zap.String("traceId", traceId),
+		zap.String("spanId", span.SpanContext().SpanID().String()),
+		zap.String("userId", userId),
+		zap.String("videoId", videoId),
+		zap.String("bucket", bucket),
+		zap.String("object", objectName),
+		zap.Int("headerSize", len(header)))
 
 	return header, nil
 }

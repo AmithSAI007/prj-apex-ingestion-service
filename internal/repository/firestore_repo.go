@@ -47,6 +47,7 @@ func NewFirestoreRepo(logger *zap.Logger, client *firestore.Client, collection s
 func (r *FirestoreRepo) TransitionStatus(ctx context.Context, eventId, traceId, userId, videoId, from, to string, updates map[string]interface{}) error {
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-ingestion-service")
 	ctx, span := tracer.Start(ctx, "FirestoreRepo.TransitionStatus",
+		otrace.WithSpanKind(otrace.SpanKindClient),
 		otrace.WithAttributes(
 			attribute.String("eventId", eventId),
 			attribute.String("traceId", traceId),
@@ -75,9 +76,12 @@ func (r *FirestoreRepo) TransitionStatus(ctx context.Context, eventId, traceId, 
 				attribute.String("expected", from),
 				attribute.String("actual", statusStr),
 			))
-			r.logger.Warn("Status transition mismatch",
+			span.SetStatus(codes.Ok, "already_processed")
+			span.AddEvent("already_processed")
+			r.logger.Warn("Status transition mismatch - video already processed",
 				zap.String("eventId", eventId),
 				zap.String("traceId", traceId),
+				zap.String("spanId", span.SpanContext().SpanID().String()),
 				zap.String("userId", userId),
 				zap.String("videoId", videoId),
 				zap.String("expectedFrom", from),
@@ -106,6 +110,11 @@ func (r *FirestoreRepo) TransitionStatus(ctx context.Context, eventId, traceId, 
 
 	if err != nil {
 		if isAppError(err) {
+			if errors.Is(err, ErrAlreadProcessed) {
+				return err
+			}
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return err
 		}
 
@@ -114,6 +123,14 @@ func (r *FirestoreRepo) TransitionStatus(ctx context.Context, eventId, traceId, 
 		span.AddEvent("transaction.failed", otrace.WithAttributes(
 			attribute.String("error", err.Error()),
 		))
+		r.logger.Error("Firestore transaction failed",
+			zap.String("eventId", eventId),
+			zap.String("traceId", traceId),
+			zap.String("spanId", span.SpanContext().SpanID().String()),
+			zap.String("userId", userId),
+			zap.String("videoId", videoId),
+			zap.String("severity", "ERROR"),
+			zap.Error(err))
 		return r.classifyError(err, eventId, traceId, userId, videoId)
 	}
 
@@ -121,12 +138,22 @@ func (r *FirestoreRepo) TransitionStatus(ctx context.Context, eventId, traceId, 
 		attribute.String("status", "success"),
 	))
 
+	r.logger.Info("Firestore status transition completed",
+		zap.String("eventId", eventId),
+		zap.String("traceId", traceId),
+		zap.String("spanId", span.SpanContext().SpanID().String()),
+		zap.String("userId", userId),
+		zap.String("videoId", videoId),
+		zap.String("fromStatus", from),
+		zap.String("toStatus", to))
+
 	return nil
 }
 
 func (r *FirestoreRepo) GetVideoStatus(ctx context.Context, eventId, traceId, userId, videoId string) (string, error) {
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-ingestion-service")
 	ctx, span := tracer.Start(ctx, "FirestoreRepo.GetVideoStatus",
+		otrace.WithSpanKind(otrace.SpanKindClient),
 		otrace.WithAttributes(
 			attribute.String("eventId", eventId),
 			attribute.String("traceId", traceId),
@@ -143,6 +170,14 @@ func (r *FirestoreRepo) GetVideoStatus(ctx context.Context, eventId, traceId, us
 		span.AddEvent("get.failed", otrace.WithAttributes(
 			attribute.String("error", err.Error()),
 		))
+		r.logger.Error("Failed to get video status from Firestore",
+			zap.String("eventId", eventId),
+			zap.String("traceId", traceId),
+			zap.String("spanId", span.SpanContext().SpanID().String()),
+			zap.String("userId", userId),
+			zap.String("videoId", videoId),
+			zap.String("severity", "ERROR"),
+			zap.Error(err))
 		return "", r.classifyError(err, eventId, traceId, userId, videoId)
 	}
 
@@ -150,6 +185,14 @@ func (r *FirestoreRepo) GetVideoStatus(ctx context.Context, eventId, traceId, us
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to extract status")
+		r.logger.Error("Failed to extract status from Firestore document",
+			zap.String("eventId", eventId),
+			zap.String("traceId", traceId),
+			zap.String("spanId", span.SpanContext().SpanID().String()),
+			zap.String("userId", userId),
+			zap.String("videoId", videoId),
+			zap.String("severity", "ERROR"),
+			zap.Error(err))
 		return "", err
 	}
 
@@ -163,6 +206,7 @@ func (r *FirestoreRepo) GetVideoStatus(ctx context.Context, eventId, traceId, us
 func (r *FirestoreRepo) Exists(ctx context.Context, eventId, traceId, userId, videoId string) (bool, error) {
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-ingestion-service")
 	ctx, span := tracer.Start(ctx, "FirestoreRepo.Exists",
+		otrace.WithSpanKind(otrace.SpanKindClient),
 		otrace.WithAttributes(
 			attribute.String("eventId", eventId),
 			attribute.String("traceId", traceId),
@@ -186,6 +230,14 @@ func (r *FirestoreRepo) Exists(ctx context.Context, eventId, traceId, userId, vi
 		span.AddEvent("check.failed", otrace.WithAttributes(
 			attribute.String("error", err.Error()),
 		))
+		r.logger.Error("Failed to check document existence in Firestore",
+			zap.String("eventId", eventId),
+			zap.String("traceId", traceId),
+			zap.String("spanId", span.SpanContext().SpanID().String()),
+			zap.String("userId", userId),
+			zap.String("videoId", videoId),
+			zap.String("severity", "ERROR"),
+			zap.Error(err))
 		return false, r.classifyError(err, eventId, traceId, userId, videoId)
 	}
 

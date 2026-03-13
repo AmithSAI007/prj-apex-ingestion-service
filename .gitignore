@@ -30,3 +30,8 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+.terraform/
+.terraform.lock.hcl
+
+app.log

@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"cloud.google.com/go/firestore"
-	"github.com/AmithSAI007/prj-apex-ingestion-service/api/dto"
+	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/dto"
 )
 
 type StorageInterface interface {

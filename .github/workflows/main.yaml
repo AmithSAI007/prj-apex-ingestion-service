@@ -230,7 +230,7 @@ jobs:
       is_pull_request: ${{ github.event_name == 'pull_request' }}
       terraform_args: "-var=container_image=${{ needs.build-and-push.outputs.short_sha }}"
     secrets:
-      PROJECT_ID: ${{ secrets.PROJECT_ID }}
-      WORKLOAD_IDENTITY: ${{ secrets.WORKLOAD_IDENTITY }}
-      SERVICE_ACCOUNT: ${{ secrets.SERVICE_ACCOUNT }}
-      PROJECT_REGION: ${{ secrets.PROJECT_REGION }}
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      WORKLOAD_IDENTITY: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      PROJECT_REGION: ${{ vars.GCP_REGION }}

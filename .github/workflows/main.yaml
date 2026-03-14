@@ -223,7 +223,7 @@ jobs:
 
   call-reusable-terraform:
     name: "Execute Terraform Core Logic"
-    needs: build_and_push
+    needs: [determine_environment, build_and_push]
     uses: AmithSAI007/prj-apex-infrastructure/.github/workflows/reusable-terraform-core.yaml@develop
     with:
       environment: ${{ needs.determine_environment.outputs.environment }}

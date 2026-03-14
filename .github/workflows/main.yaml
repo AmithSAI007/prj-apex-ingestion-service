@@ -211,7 +211,8 @@ jobs:
         run: |
           cat <<EOF > deploy.tfvars.json
           {
-            "container_image": "${{ steps.build.outputs.short_sha }}"
+            "container_image": "${{ steps.build.outputs.short_sha }}",
+            "service_account_name": "${{ secrets.GCP_SERVICE_ACCOUNT }}",
           }
           EOF
 

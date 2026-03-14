@@ -1,7 +1,7 @@
 output "queue_name" {
-  value = google_cloud_tasks_queue.queue.name
+  value = google_cloud_tasks_queue.transcoder_task_queue.name
 }
 
 output "queue_path" {
-  value = google_cloud_tasks_queue.queue.path
+  value = google_cloud_tasks_queue.transcoder_task_queue.path
 }

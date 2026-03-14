@@ -21,8 +21,8 @@ module "service" {
   max_instance_count     = var.max_instance_count
   memory_limit           = var.memory_limit
   cpu_limit              = var.cpu_limit
-  gcs_bucket             = module.storage.bucket_name
+  gcs_bucket             = module.storage.raw_videos_bucket_name
   cloud_tasks_queue_path = module.tasks.queue_path
   cloud_tasks_queue_name = module.tasks.queue_name
-  pubsub_subscription_id = module.pubsub.subscription_id
+  pubsub_subscription_id = module.pubsub.apex_video_ingestion_subscription_name
 }

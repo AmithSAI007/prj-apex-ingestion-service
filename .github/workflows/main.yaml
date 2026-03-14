@@ -127,7 +127,6 @@ jobs:
       - name: Run tests with coverage
         run: |
           go test -v -count=1 -coverprofile=coverage.out ./...
-
       # - name: Verify coverage threshold (80%)
       #   run: |
       #     COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')

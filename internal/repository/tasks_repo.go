@@ -10,7 +10,6 @@ import (
 	cloudtaskspb "cloud.google.com/go/cloudtasks/apiv2/cloudtaskspb"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/config"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/dto"
-	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"

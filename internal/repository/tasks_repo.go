@@ -74,8 +74,7 @@ func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.
 		attribute.Int("payloadSize", len(body)),
 	))
 
-	// TODO: revert random uuid
-	taskName := fmt.Sprintf("projects/%s/locations/%s/queues/%s/tasks/%s/%s", r.cfg.GCPProjectID, r.cfg.ProjectRegion, r.cfg.CloudTasksQueueName, payload.VideoID, uuid.New().String())
+	taskName := fmt.Sprintf("projects/%s/locations/%s/queues/%s/tasks/%s", r.cfg.GCPProjectID, r.cfg.ProjectRegion, r.cfg.CloudTasksQueueName, payload.VideoID)
 
 	span.SetAttributes(
 		attribute.String("taskName", taskName),
@@ -86,7 +85,7 @@ func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.
 	req := &cloudtaskspb.CreateTaskRequest{
 		Parent: r.cfg.CloudTasksQueuePath,
 		Task: &cloudtaskspb.Task{
-			Name: taskName,
+			// Name: taskName,
 			MessageType: &cloudtaskspb.Task_HttpRequest{
 				HttpRequest: &cloudtaskspb.HttpRequest{
 					HttpMethod: cloudtaskspb.HttpMethod_POST,

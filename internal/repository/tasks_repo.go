@@ -89,7 +89,7 @@ func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.
 			MessageType: &cloudtaskspb.Task_HttpRequest{
 				HttpRequest: &cloudtaskspb.HttpRequest{
 					HttpMethod: cloudtaskspb.HttpMethod_POST,
-					Url:        r.cfg.TranscoderServiceUrl,
+					Url:        r.cfg.TranscoderServiceUrl + "/api/v1/",
 					Headers: map[string]string{
 						"Content-Type": "application/json",
 					},

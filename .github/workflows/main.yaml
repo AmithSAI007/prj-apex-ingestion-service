@@ -189,12 +189,13 @@ jobs:
           REGISTRY="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_REPOSITORY }}"
           IMAGE="${REGISTRY}/${{ env.IMAGE_NAME }}"
           SHA_TAG="${IMAGE}:${{ github.sha }}"
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
           SHORT_SHA_TAG="${IMAGE}:$(echo ${{ github.sha }} | cut -c1-7)"
           LATEST_TAG="${IMAGE}:latest"
           ENV_TAG="${IMAGE}:${{ needs.determine_environment.outputs.environment }}"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "tags=${SHA_TAG},${SHORT_SHA_TAG},${LATEST_TAG},${ENV_TAG}" >> "$GITHUB_OUTPUT"
-          echo "short_sha=${SHORT_SHA_TAG}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker image
         id: build

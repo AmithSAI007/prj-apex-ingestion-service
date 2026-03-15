@@ -66,7 +66,7 @@ func main() {
 	}
 	defer func() { _ = cloudTasksClient.Close() }()
 
-	firestoreClient, err := platform.NewClient(ctx, cfg.GCPProjectID)
+	firestoreClient, err := platform.NewClient(ctx, cfg.GCPProjectID, cfg.FirestoreDatabaseID)
 	if err != nil {
 		logger.Fatal("Failed to initialize Firestore client", zap.Error(err))
 	}

@@ -119,3 +119,18 @@ variable "max_outstanding_messages" {
   type        = number
   default     = 10
 }
+
+variable "otel_exporter_otlp_endpoint" {
+  description = "The endpoint for the OpenTelemetry Protocol (OTLP) exporter."
+  type        = string
+}
+
+variable "otel_exporter_otlp_headers" {
+  description = "Headers for the OTLP exporter, formatted as 'key1=value1,key2=value2'."
+  type        = string
+}
+
+variable "otel_resource_attributes" {
+  description = "Resource attributes for OpenTelemetry, formatted as 'key1=value1,key2=value2'."
+  type        = string
+}

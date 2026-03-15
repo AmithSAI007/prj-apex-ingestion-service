@@ -46,7 +46,9 @@ func main() {
 		logger.Fatal("Failed to initialize tracer", zap.Error(err))
 	}
 	defer func() {
-		if err := otelShutdown(ctx); err != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := otelShutdown(shutdownCtx); err != nil {
 			logger.Error("Failed to shutdown tracer", zap.Error(err))
 		}
 	}()

@@ -13,6 +13,9 @@ resource "google_cloud_run_v2_service" "apex_ingestion_service" {
   }
 
   template {
+
+    service_account = var.service_account_name
+
     containers {
       image = var.container_image
 

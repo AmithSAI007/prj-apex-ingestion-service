@@ -79,7 +79,7 @@ func (s *IngestionService) ProcessUpload(ctx context.Context, metadata *dto.Meta
 			zap.String("eventId", metadata.ID),
 			zap.String("traceId", metadata.TraceID),
 			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return err
 	}
@@ -98,7 +98,7 @@ func (s *IngestionService) ProcessUpload(ctx context.Context, metadata *dto.Meta
 			zap.String("eventId", metadata.ID),
 			zap.String("traceId", metadata.TraceID),
 			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return err
 	}
@@ -122,7 +122,7 @@ func (s *IngestionService) ProcessUpload(ctx context.Context, metadata *dto.Meta
 			zap.String("eventId", metadata.ID),
 			zap.String("traceId", metadata.TraceID),
 			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return err
 	}
@@ -151,7 +151,7 @@ func (s *IngestionService) ProcessUpload(ctx context.Context, metadata *dto.Meta
 			zap.String("eventId", metadata.ID),
 			zap.String("traceId", metadata.TraceID),
 			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return err
 	}
@@ -187,7 +187,7 @@ func (s *IngestionService) ProcessUpload(ctx context.Context, metadata *dto.Meta
 			zap.String("eventId", metadata.ID),
 			zap.String("traceId", metadata.TraceID),
 			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("severity", "ERROR"),
+
 			zap.String("video_id", eventData.MDFHash),
 			zap.Error(err))
 		return err
@@ -221,7 +221,7 @@ func (s *IngestionService) ProcessUpload(ctx context.Context, metadata *dto.Meta
 			zap.String("eventId", metadata.ID),
 			zap.String("traceId", metadata.TraceID),
 			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("severity", "ERROR"),
+
 			zap.String("video_id", eventData.MDFHash),
 			zap.Error(err))
 		return err
@@ -245,7 +245,7 @@ func (s *IngestionService) ProcessUpload(ctx context.Context, metadata *dto.Meta
 			zap.String("eventId", metadata.ID),
 			zap.String("traceId", metadata.TraceID),
 			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("severity", "ERROR"),
+
 			zap.String("video_id", eventData.MDFHash),
 			zap.Error(err))
 		return err
@@ -291,7 +291,7 @@ func (s *IngestionService) validateEvent(ctx context.Context, metadata *dto.Meta
 			zap.String("traceId", metadata.TraceID),
 			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("eventType", metadata.EventType),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return err
 	}
@@ -310,7 +310,7 @@ func (s *IngestionService) validateEvent(ctx context.Context, metadata *dto.Meta
 			zap.String("traceId", metadata.TraceID),
 			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("time_created", metadata.EventTime),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return err
 	}
@@ -342,7 +342,7 @@ func (s *IngestionService) validateObjectPath(ctx context.Context, objectName st
 			zap.String("eventId", eventId),
 			zap.String("traceId", traceId),
 			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("severity", "ERROR"),
+
 			zap.String("object_name", objectName),
 			zap.Error(err))
 		return "", "", err
@@ -364,7 +364,7 @@ func (s *IngestionService) validateObjectPath(ctx context.Context, objectName st
 			zap.String("eventId", eventId),
 			zap.String("traceId", traceId),
 			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("severity", "ERROR"),
+
 			zap.String("user_id", userID),
 			zap.Error(err))
 		return "", "", err
@@ -383,7 +383,7 @@ func (s *IngestionService) validateObjectPath(ctx context.Context, objectName st
 			zap.String("eventId", eventId),
 			zap.String("traceId", traceId),
 			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("severity", "ERROR"),
+
 			zap.String("video_id", videoId),
 			zap.Error(err))
 		return "", "", err
@@ -421,7 +421,7 @@ func (s *IngestionService) validateBucket(ctx context.Context, bucket string, ev
 			zap.String("eventId", eventId),
 			zap.String("traceId", traceId),
 			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("severity", "ERROR"),
+
 			zap.String("bucket", bucket),
 			zap.String("expected_bucket", s.cfg.GCSBucket))
 		return err
@@ -461,7 +461,7 @@ func (s *IngestionService) validateFile(ctx context.Context, eventData *dto.GCSO
 			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.String("file_size", eventData.Size),
 			zap.Error(err))
 		return err
@@ -481,7 +481,7 @@ func (s *IngestionService) validateFile(ctx context.Context, eventData *dto.GCSO
 			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Int64("file_size", fileSize),
 			zap.Error(err))
 		return err
@@ -506,7 +506,7 @@ func (s *IngestionService) validateFile(ctx context.Context, eventData *dto.GCSO
 			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.String("bucket", eventData.Bucket),
 			zap.String("object_name", eventData.Name),
 			zap.Error(err))
@@ -532,7 +532,7 @@ func (s *IngestionService) validateFile(ctx context.Context, eventData *dto.GCSO
 			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.String("object_name", eventData.Name),
 			zap.Error(err))
 		return err

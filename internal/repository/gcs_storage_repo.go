@@ -55,7 +55,7 @@ func (s *StorageService) ReadObjectHeader(ctx context.Context, eventId, traceId,
 				zap.String("spanId", span.SpanContext().SpanID().String()),
 				zap.String("userId", userId),
 				zap.String("videoId", videoId),
-				zap.String("severity", "ERROR"),
+
 				zap.String("bucket", bucket),
 				zap.String("object", objectName),
 				zap.Error(err))
@@ -72,7 +72,7 @@ func (s *StorageService) ReadObjectHeader(ctx context.Context, eventId, traceId,
 			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.String("bucket", bucket),
 			zap.String("object", objectName),
 			zap.Error(err))
@@ -94,7 +94,7 @@ func (s *StorageService) ReadObjectHeader(ctx context.Context, eventId, traceId,
 			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.String("bucket", bucket),
 			zap.String("object", objectName),
 			zap.Error(err))

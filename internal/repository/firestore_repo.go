@@ -123,7 +123,7 @@ func (r *FirestoreRepo) TransitionStatus(ctx context.Context, eventId, traceId, 
 			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return r.classifyError(err, eventId, traceId, userId, videoId)
 	}
@@ -170,7 +170,7 @@ func (r *FirestoreRepo) GetVideoStatus(ctx context.Context, eventId, traceId, us
 			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return "", r.classifyError(err, eventId, traceId, userId, videoId)
 	}
@@ -185,7 +185,7 @@ func (r *FirestoreRepo) GetVideoStatus(ctx context.Context, eventId, traceId, us
 			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return "", err
 	}
@@ -230,7 +230,7 @@ func (r *FirestoreRepo) Exists(ctx context.Context, eventId, traceId, userId, vi
 			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return false, r.classifyError(err, eventId, traceId, userId, videoId)
 	}
@@ -260,7 +260,7 @@ func (r *FirestoreRepo) extractStatus(docSnap *firestore.DocumentSnapshot, event
 			zap.String("traceId", traceId),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return "", fmt.Errorf("video %s: %w", videoId, ErrTransactionFailed)
 	}
@@ -272,7 +272,7 @@ func (r *FirestoreRepo) extractStatus(docSnap *firestore.DocumentSnapshot, event
 			zap.String("traceId", traceId),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Any("statusValue", currentStatus))
 		return "", fmt.Errorf("video %s: %w", videoId, ErrTransactionFailed)
 	}
@@ -289,7 +289,7 @@ func (r *FirestoreRepo) classifyError(err error, eventId, traceId, userId, video
 			zap.String("traceId", traceId),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return fmt.Errorf("video %s: %w", videoId, ErrDocumentNotFound)
 
@@ -299,7 +299,7 @@ func (r *FirestoreRepo) classifyError(err error, eventId, traceId, userId, video
 			zap.String("traceId", traceId),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return fmt.Errorf("invalid argument for video %s: %w", videoId, ErrTransactionFailed)
 
@@ -309,7 +309,7 @@ func (r *FirestoreRepo) classifyError(err error, eventId, traceId, userId, video
 			zap.String("traceId", traceId),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return fmt.Errorf("permission denied for video %s: %w", videoId, ErrTransactionFailed)
 
@@ -319,7 +319,7 @@ func (r *FirestoreRepo) classifyError(err error, eventId, traceId, userId, video
 			zap.String("traceId", traceId),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return fmt.Errorf("unauthenticated access for video %s: %w", videoId, ErrTransactionFailed)
 
@@ -329,7 +329,7 @@ func (r *FirestoreRepo) classifyError(err error, eventId, traceId, userId, video
 			zap.String("traceId", traceId),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return fmt.Errorf("firestore service unavailable for video %s: %w", videoId, ErrTransactionFailed)
 
@@ -339,7 +339,7 @@ func (r *FirestoreRepo) classifyError(err error, eventId, traceId, userId, video
 			zap.String("traceId", traceId),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return fmt.Errorf("firestore operation timed out for video %s: %w", videoId, ErrTransactionFailed)
 
@@ -349,7 +349,7 @@ func (r *FirestoreRepo) classifyError(err error, eventId, traceId, userId, video
 			zap.String("traceId", traceId),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return fmt.Errorf("firestore resource exhausted for video %s: %w", videoId, ErrTransactionFailed)
 
@@ -359,7 +359,7 @@ func (r *FirestoreRepo) classifyError(err error, eventId, traceId, userId, video
 			zap.String("traceId", traceId),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return fmt.Errorf("firestore transaction aborted for video %s: %w", videoId, ErrTransactionFailed)
 
@@ -369,7 +369,7 @@ func (r *FirestoreRepo) classifyError(err error, eventId, traceId, userId, video
 			zap.String("traceId", traceId),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return fmt.Errorf("firestore operation cancelled for video %s: %w", videoId, ErrTransactionFailed)
 
@@ -379,7 +379,7 @@ func (r *FirestoreRepo) classifyError(err error, eventId, traceId, userId, video
 			zap.String("traceId", traceId),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return fmt.Errorf("internal firestore error for video %s: %w", videoId, ErrTransactionFailed)
 
@@ -389,7 +389,7 @@ func (r *FirestoreRepo) classifyError(err error, eventId, traceId, userId, video
 			zap.String("traceId", traceId),
 			zap.String("userId", userId),
 			zap.String("videoId", videoId),
-			zap.String("severity", "ERROR"),
+
 			zap.Error(err))
 		return fmt.Errorf("unexpected firestore error for video %s: %w", videoId, ErrTransactionFailed)
 	}

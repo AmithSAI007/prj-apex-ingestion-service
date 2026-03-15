@@ -10,6 +10,7 @@ import (
 	cloudtaskspb "cloud.google.com/go/cloudtasks/apiv2/cloudtaskspb"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/config"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/dto"
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -65,7 +66,6 @@ func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.
 			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("userId", payload.UserID),
 			zap.String("videoId", payload.VideoID),
-			zap.String("severity", "ERROR"),
 			zap.Error(err))
 		return fmt.Errorf("failed to marshal task payload: %w", err)
 	}
@@ -74,7 +74,8 @@ func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.
 		attribute.Int("payloadSize", len(body)),
 	))
 
-	taskName := fmt.Sprintf("projects/%s/locations/%s/queues/%s/tasks/%s", r.cfg.GCPProjectID, r.cfg.ProjectRegion, r.cfg.CloudTasksQueueName, payload.VideoID)
+	// TODO: revert random uuid
+	taskName := fmt.Sprintf("projects/%s/locations/%s/queues/%s/tasks/%s/%s", r.cfg.GCPProjectID, r.cfg.ProjectRegion, r.cfg.CloudTasksQueueName, payload.VideoID, uuid.New().String())
 
 	span.SetAttributes(
 		attribute.String("taskName", taskName),
@@ -117,7 +118,6 @@ func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.
 			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.String("userId", payload.UserID),
 			zap.String("videoId", payload.VideoID),
-			zap.String("severity", "ERROR"),
 			zap.Error(err))
 		return r.classifyError(err, payload)
 	}
@@ -154,7 +154,6 @@ func (r *CloudTasksRepo) classifyError(err error, payload *dto.TranscoderService
 			zap.String("traceId", payload.TraceID),
 			zap.String("userId", payload.UserID),
 			zap.String("videoId", payload.VideoID),
-			zap.String("severity", "ERROR"),
 			zap.Error(err))
 		return fmt.Errorf("transient cloud tasks error for video: %s: %w", payload.VideoID, ErrTransientError)
 
@@ -164,7 +163,6 @@ func (r *CloudTasksRepo) classifyError(err error, payload *dto.TranscoderService
 			zap.String("traceId", payload.TraceID),
 			zap.String("userId", payload.UserID),
 			zap.String("videoId", payload.VideoID),
-			zap.String("severity", "ERROR"),
 			zap.Error(err))
 		return fmt.Errorf("non-retryable cloud tasks error for video %s: %w", payload.VideoID, ErrNonRetryableError)
 	default:
@@ -173,7 +171,6 @@ func (r *CloudTasksRepo) classifyError(err error, payload *dto.TranscoderService
 			zap.String("traceId", payload.TraceID),
 			zap.String("userId", payload.UserID),
 			zap.String("videoId", payload.VideoID),
-			zap.String("severity", "ERROR"),
 			zap.Error(err))
 		return fmt.Errorf("non-retryable cloud tasks error for video %s: %w", payload.VideoID, ErrNonRetryableError)
 	}

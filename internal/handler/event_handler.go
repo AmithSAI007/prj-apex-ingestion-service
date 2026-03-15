@@ -18,11 +18,11 @@ import (
 type HeaderKey string
 
 const (
-	CeTypeHeaderKey       HeaderKey = "Ce-Type"
-	CeSourceHeaderKey     HeaderKey = "Ce-Source"
-	CeIDHeaderKey         HeaderKey = "Ce-ID"
-	CeSubjectHeaderKey    HeaderKey = "Ce-Subject"
-	CeTimeHeaderKey       HeaderKey = "Ce-Time"
+	CeTypeHeaderKey       HeaderKey = "eventType"
+	CeSourceHeaderKey     HeaderKey = "bucketId"
+	CeIDHeaderKey         HeaderKey = "objectId"
+	CeSubjectHeaderKey    HeaderKey = "objectGeneration"
+	CeTimeHeaderKey       HeaderKey = "eventTime"
 	GoogClientTraceparent HeaderKey = "googclient_traceparent"
 )
 

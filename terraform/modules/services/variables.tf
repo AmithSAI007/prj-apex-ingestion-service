@@ -19,7 +19,7 @@ variable "project_region" {
 variable "transcoder_service_name" {
   description = "The name of the Cloud Run service."
   type        = string
-  default     = "prj-apex-transcoder-service"
+  default     = "prj-apex-transcode-submitter"
 }
 
 variable "service_name" {

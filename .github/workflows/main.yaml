@@ -211,7 +211,7 @@ jobs:
         run: |
           cat <<EOF > deploy.tfvars.json
           {
-            "container_image": "${{ steps.build.outputs.short_sha }}",
+            "container_image": "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}",
             "service_account_name": "${{ secrets.GCP_SERVICE_ACCOUNT }}"
           }
           EOF
@@ -231,7 +231,6 @@ jobs:
       environment: ${{ needs.determine_environment.outputs.environment }}
       terraform_directory: ${{ needs.determine_environment.outputs.dir }}
       is_pull_request: ${{ github.event_name == 'pull_request' }}
-      terraform_args: "-var=container_image=${{ needs.build-and-push.outputs.short_sha }}"
     secrets:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       WORKLOAD_IDENTITY: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}

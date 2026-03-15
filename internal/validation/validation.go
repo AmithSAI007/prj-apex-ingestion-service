@@ -33,7 +33,7 @@ var (
 	}
 )
 
-const FinalizedEventType string = "google.cloud.storage.object.v1.finalized"
+const FinalizedEventType string = "OBJECT_FINALIZE"
 
 type magicSignature struct {
 	Format string

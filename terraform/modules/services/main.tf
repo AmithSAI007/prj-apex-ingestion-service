@@ -98,6 +98,10 @@ resource "google_cloud_run_v2_service" "apex_ingestion_service" {
         name  = "OTEL_RESOURCE_ATTRIBUTES"
         value = var.otel_resource_attributes
       }
+      env {
+        name  = "FIRESTORE_DATABASE_ID"
+        value = var.firestore_database_id
+      }
     }
   }
 

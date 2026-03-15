@@ -216,6 +216,7 @@ jobs:
           OTEL_HEADERS: "${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}"
           OTEL_ENDPOINT: "${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}"
           OTEL_RESOURCE_ATTRS: "${{ vars.OTEL_RESOURCE_ATTRIBUTES }}"
+          FIRESTORE_DATABASE_ID: "${{ vars.FIRESTORE_DATABASE_ID }}"
         run: |
           jq -n \
             --arg ci "$CONTAINER_IMAGE" \
@@ -223,12 +224,14 @@ jobs:
             --arg oh "$OTEL_HEADERS" \
             --arg oe "$OTEL_ENDPOINT" \
             --arg or "$OTEL_RESOURCE_ATTRS" \
+            --arg fd "$FIRESTORE_DATABASE_ID" \
             '{
               container_image: $ci,
               service_account_name: $sa,
               otel_exporter_otlp_headers: $oh,
               otel_exporter_otlp_endpoint: $oe,
               otel_resource_attributes: $or
+              firestore_database_id: $fd
             }' > deploy.tfvars.json
 
       - name: Upload Config

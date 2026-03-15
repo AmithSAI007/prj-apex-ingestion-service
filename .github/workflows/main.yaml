@@ -160,6 +160,7 @@ jobs:
     outputs:
       image: ${{ steps.meta.outputs.image }}
       digest: ${{ steps.build.outputs.digest }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5

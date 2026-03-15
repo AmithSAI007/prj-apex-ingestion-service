@@ -230,7 +230,7 @@ jobs:
               service_account_name: $sa,
               otel_exporter_otlp_headers: $oh,
               otel_exporter_otlp_endpoint: $oe,
-              otel_resource_attributes: $or
+              otel_resource_attributes: $or,
               firestore_database_id: $fd
             }' > deploy.tfvars.json
 

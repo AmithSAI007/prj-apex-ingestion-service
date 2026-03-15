@@ -169,6 +169,7 @@ func (s *IngestionService) ProcessUpload(ctx context.Context, metadata *dto.Meta
 		repository.RawFilePathField: filePath,
 		repository.ContentTypeField: eventData.ContentType,
 		repository.FileSizeField:    eventData.Size,
+		repository.FileHashField:    eventData.MDFHash,
 	}
 
 	ctx, firestoreSpan := tracer.Start(ctx, "IngestionService.TransitionStatus", otrace.WithSpanKind(otrace.SpanKindClient))

@@ -98,12 +98,6 @@ func (r *FirestoreRepo) TransitionStatus(ctx context.Context, eventId, traceId, 
 			{Path: FileHashField, Value: updates[FileHashField]},
 		}
 
-		for field, value := range updates {
-			firestoreUpdates = append(firestoreUpdates, firestore.Update{
-				Path: field, Value: value,
-			})
-		}
-
 		return tx.Update(docRef, firestoreUpdates)
 
 	})

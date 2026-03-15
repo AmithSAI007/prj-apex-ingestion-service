@@ -134,3 +134,8 @@ variable "otel_resource_attributes" {
   description = "Resource attributes for OpenTelemetry, formatted as 'key1=value1,key2=value2'."
   type        = string
 }
+
+variable "firestore_database_id" {
+  description = "The Firestore database ID to be used by the service."
+  type        = string
+}

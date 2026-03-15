@@ -39,6 +39,7 @@ type Config struct {
 	PubSubSubscriptionID    string `mapstructure:"PUBSUB_SUBSCRIPTION_ID"`
 	MaxOutstandingMessages  int    `mapstructure:"MAX_OUTSTANDING_MESSAGES"`
 	FirestoreCollectionName string `mapstructure:"FIRESTORE_COLLECTION_NAME"`
+	FirestoreDatabaseID     string `mapstructure:"FIRESTORE_DATABASE_ID"`
 }
 
 // LoadConfig reads configuration from a YAML file at the given path and merges
@@ -66,6 +67,7 @@ func LoadConfig(path string) (*Config, error) {
 	viper.SetDefault("PUBSUB_SUBSCRIPTION_ID", "")
 	viper.SetDefault("MAX_OUTSTANDING_MESSAGES", 10)
 	viper.SetDefault("FIRESTORE_COLLECTION_NAME", "videos")
+	viper.SetDefault("FIRESTORE_DATABASE_ID", "apex-firestore-db")
 
 	viper.AddConfigPath(path)
 	viper.SetConfigName("config")

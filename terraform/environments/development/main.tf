@@ -28,4 +28,5 @@ module "service" {
   otel_exporter_otlp_endpoint = var.otel_exporter_otlp_endpoint
   otel_exporter_otlp_headers  = var.otel_exporter_otlp_headers
   otel_resource_attributes    = var.otel_resource_attributes
+  firestore_database_id       = var.firestore_database_id
 }

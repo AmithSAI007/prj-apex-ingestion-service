@@ -12,8 +12,8 @@ type Client struct {
 }
 
 // NewClient initializes a Firestore client with ADC and returns a wrapped Client instance.
-func NewClient(ctx context.Context, projectID string) (*Client, error) {
-	client, err := firestore.NewClient(ctx, projectID)
+func NewClient(ctx context.Context, projectID, databaseID string) (*Client, error) {
+	client, err := firestore.NewClientWithDatabase(ctx, projectID, databaseID)
 	if err != nil {
 		return nil, err
 	}

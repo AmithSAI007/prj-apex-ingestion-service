@@ -86,6 +86,18 @@ resource "google_cloud_run_v2_service" "apex_ingestion_service" {
         name  = "MAX_OUTSTANDING_MESSAGES"
         value = var.max_outstanding_messages
       }
+      env {
+        name  = "OTEL_EXPORTER_OTLP_ENDPOINT"
+        value = var.otel_exporter_otlp_endpoint
+      }
+      env {
+        name  = "OTEL_EXPORTER_OTLP_HEADERS"
+        value = var.otel_exporter_otlp_headers
+      }
+      env {
+        name  = "OTEL_RESOURCE_ATTRIBUTES"
+        value = var.otel_resource_attributes
+      }
     }
   }
 

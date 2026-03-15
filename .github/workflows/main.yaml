@@ -210,13 +210,26 @@ jobs:
           sbom: true
 
       - name: Create Terraform Config
+        env:
+          CONTAINER_IMAGE: "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}"
+          SERVICE_ACCOUNT_NAME: "${{ secrets.GCP_SERVICE_ACCOUNT }}"
+          OTEL_HEADERS: "${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}"
+          OTEL_ENDPOINT: "${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}"
+          OTEL_RESOURCE_ATTRS: "${{ vars.OTEL_RESOURCE_ATTRIBUTES }}"
         run: |
-          cat <<EOF > deploy.tfvars.json
-          {
-            "container_image": "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}",
-            "service_account_name": "${{ secrets.GCP_SERVICE_ACCOUNT }}"
-          }
-          EOF
+          jq -n \
+            --arg ci "$CONTAINER_IMAGE" \
+            --arg sa "$SERVICE_ACCOUNT_NAME" \
+            --arg oh "$OTEL_HEADERS" \
+            --arg oe "$OTEL_ENDPOINT" \
+            --arg or "$OTEL_RESOURCE_ATTRS" \
+            '{
+              container_image: $ci,
+              service_account_name: $sa,
+              otel_exporter_otlp_headers: $oh,
+              otel_exporter_otlp_endpoint: $oe,
+              otel_resource_attributes: $or
+            }' > deploy.tfvars.json
 
       - name: Upload Config
         uses: actions/upload-artifact@v4

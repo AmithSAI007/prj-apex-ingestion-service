@@ -3,16 +3,23 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 
+	"cloud.google.com/go/storage"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/dto"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/platform"
+	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/repository"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/service"
+	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/validation"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	otrace "go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
+	grpccodes "google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type HeaderKey string
@@ -116,7 +123,7 @@ func (h *EventHander) Handle(ctx context.Context, data []byte, attrs map[string]
 			zap.String("traceId", meta.TraceID),
 			zap.String("spanId", span.SpanContext().SpanID().String()),
 			zap.Error(err))
-		return platform.ResultNack
+		return h.respondWithError(err, span)
 	}
 
 	span.AddEvent("event.processed", otrace.WithAttributes(
@@ -165,4 +172,172 @@ func parseCloudEventMeta(attrs map[string]string) (*dto.MetaData, error) {
 		Subject:   ceSubject,
 		EventTime: ceTime,
 	}, nil
+}
+
+func (h *EventHander) respondWithError(err error, span otrace.Span) platform.Result {
+	if span != nil && span.IsRecording() {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+
+	switch {
+	case errors.Is(err, validation.ErrPathInjection),
+		errors.Is(err, validation.ErrInvalidObjectPath),
+		errors.Is(err, validation.ErrInvalidUUID),
+		errors.Is(err, validation.ErrUnexpectedEventType),
+		errors.Is(err, validation.ErrInvalidTimestamp),
+		errors.Is(err, validation.ErrInvalidJSON),
+		errors.Is(err, validation.ErrStaleEvent),
+		errors.Is(err, validation.ErrUnexpectedBucket),
+		errors.Is(err, validation.ErrFileTooSmall),
+		errors.Is(err, validation.ErrFileTooLarge),
+		errors.Is(err, validation.ErrUnsupportedFormat):
+		if span != nil && span.IsRecording() {
+			span.AddEvent("validation.error.ack", otrace.WithAttributes(
+				attribute.String("error", err.Error()),
+			))
+		}
+		h.logger.Warn("Validation error, ACKing message",
+			zap.Error(err))
+		return platform.ResultAck
+
+	case errors.Is(err, repository.ErrAlreadProcessed):
+		if span != nil && span.IsRecording() {
+			span.AddEvent("idempotency.conflict.ack", otrace.WithAttributes(
+				attribute.String("error", err.Error()),
+			))
+		}
+		h.logger.Warn("Idempotency conflict - video already processed, ACKing",
+			zap.Error(err))
+		return platform.ResultAck
+
+	case isGCSObjectNotFound(err):
+		if span != nil && span.IsRecording() {
+			span.AddEvent("gcs.object.not_found.ack", otrace.WithAttributes(
+				attribute.String("error", err.Error()),
+			))
+		}
+		h.logger.Warn("GCS object not found, ACKing",
+			zap.Error(err))
+		return platform.ResultAck
+
+	case isGCSTransientError(err):
+		if span != nil && span.IsRecording() {
+			span.AddEvent("gcs.transient.error.nack", otrace.WithAttributes(
+				attribute.String("error", err.Error()),
+			))
+		}
+		h.logger.Error("GCS transient error, NACKing",
+			zap.Error(err))
+		return platform.ResultNack
+
+	case isFirestoreTransientError(err):
+		if span != nil && span.IsRecording() {
+			span.AddEvent("firestore.transient.error.nack", otrace.WithAttributes(
+				attribute.String("error", err.Error()),
+			))
+		}
+		h.logger.Error("Firestore transient error, NACKing",
+			zap.Error(err))
+		return platform.ResultNack
+
+	case isFirestorePermanentError(err):
+		if span != nil && span.IsRecording() {
+			span.AddEvent("firestore.permanent.error.ack", otrace.WithAttributes(
+				attribute.String("error", err.Error()),
+			))
+		}
+		h.logger.Error("Firestore permanent error, ACKing",
+			zap.Error(err))
+		return platform.ResultAck
+
+	case errors.Is(err, repository.ErrTransientError):
+		if span != nil && span.IsRecording() {
+			span.AddEvent("cloudtask.transient.error.nack", otrace.WithAttributes(
+				attribute.String("error", err.Error()),
+			))
+		}
+		h.logger.Error("Cloud Tasks transient error, NACKing",
+			zap.Error(err))
+		return platform.ResultNack
+
+	case isCloudTaskAlreadyExists(err):
+		if span != nil && span.IsRecording() {
+			span.AddEvent("cloudtask.already_exists.ack", otrace.WithAttributes(
+				attribute.String("error", err.Error()),
+			))
+		}
+		h.logger.Warn("Cloud Task already exists, ACKing",
+			zap.Error(err))
+		return platform.ResultAck
+
+	case errors.Is(err, repository.ErrNonRetryableError):
+		if span != nil && span.IsRecording() {
+			span.AddEvent("cloudtask.permanent.error.ack", otrace.WithAttributes(
+				attribute.String("error", err.Error()),
+			))
+		}
+		h.logger.Error("Cloud Tasks permanent error, ACKing",
+			zap.Error(err))
+		return platform.ResultAck
+
+	case errors.Is(err, context.Canceled):
+		if span != nil && span.IsRecording() {
+			span.AddEvent("context.cancelled.nack", otrace.WithAttributes(
+				attribute.String("error", err.Error()),
+			))
+		}
+		h.logger.Warn("Context cancelled, NACKing",
+			zap.Error(err))
+		return platform.ResultNack
+
+	default:
+		if span != nil && span.IsRecording() {
+			span.AddEvent("unknown.error.nack", otrace.WithAttributes(
+				attribute.String("error", err.Error()),
+			))
+		}
+		h.logger.Error("Unknown error, NACKing",
+			zap.Error(err))
+		return platform.ResultNack
+	}
+}
+
+func isGCSObjectNotFound(err error) bool {
+	if errors.Is(err, storage.ErrObjectNotExist) {
+		return true
+	}
+	return strings.Contains(err.Error(), "object not found")
+}
+
+func isGCSTransientError(err error) bool {
+	if errors.Is(err, storage.ErrBucketNotExist) {
+		return false
+	}
+	code := status.Code(err)
+	return code == grpccodes.Unavailable ||
+		code == grpccodes.DeadlineExceeded ||
+		code == grpccodes.ResourceExhausted
+}
+
+func isFirestoreTransientError(err error) bool {
+	code := status.Code(err)
+	return code == grpccodes.Unavailable ||
+		code == grpccodes.DeadlineExceeded ||
+		code == grpccodes.ResourceExhausted ||
+		code == grpccodes.Aborted ||
+		code == grpccodes.Internal
+}
+
+func isFirestorePermanentError(err error) bool {
+	code := status.Code(err)
+	return code == grpccodes.PermissionDenied ||
+		code == grpccodes.NotFound ||
+		code == grpccodes.InvalidArgument ||
+		code == grpccodes.Unauthenticated
+}
+
+func isCloudTaskAlreadyExists(err error) bool {
+	code := status.Code(err)
+	return code == grpccodes.AlreadyExists
 }

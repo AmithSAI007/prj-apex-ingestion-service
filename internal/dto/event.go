@@ -35,6 +35,8 @@ type SuccessResponse struct {
 type TranscoderServicePayload struct {
 	EventID     string `json:"eventId"`
 	TraceID     string `json:"traceId"`
+	ContentType string `json:"contentType" example:"video/mp4"`
+	FileSize    string `json:"fileSize" example:"10485760"`
 	VideoID     string `json:"videoId" example:"vid_12345"`
 	UserID      string `json:"userId" example:"user_67890"`
 	RawFilePath string `json:"rawFilePath" example:"gs://bucket_name/path/to/video.mp4"`

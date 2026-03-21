@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/apperror"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/config"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/dto"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/repository"
@@ -58,7 +60,7 @@ func NewIngestionService(logger *zap.Logger,
 func (s *IngestionService) ProcessUpload(ctx context.Context, metadata *dto.MetaData, eventData *dto.GCSObjectData) error {
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-ingestion-service")
 	ctx, span := tracer.Start(ctx, "IngestionService.ProcessUpload",
-		otrace.WithSpanKind(otrace.SpanKindClient),
+		otrace.WithSpanKind(otrace.SpanKindInternal),
 		otrace.WithAttributes(
 			attribute.String("eventId", metadata.ID),
 			attribute.String("traceId", metadata.TraceID),
@@ -69,67 +71,59 @@ func (s *IngestionService) ProcessUpload(ctx context.Context, metadata *dto.Meta
 		))
 	defer span.End()
 
+	logFields := []zap.Field{
+		zap.String("component", "service.ingestion"),
+		zap.String("eventId", metadata.ID),
+		zap.String("traceId", metadata.TraceID),
+		zap.String("spanId", span.SpanContext().SpanID().String()),
+	}
+
+	// --- Validate Event ---
 	if err := s.validateEvent(ctx, metadata); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Event validation failed")
-		span.AddEvent("validation.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
-		s.logger.Error("Event validation failed",
-			zap.String("eventId", metadata.ID),
-			zap.String("traceId", metadata.TraceID),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-
-			zap.Error(err))
-		return err
+		s.logger.Warn("event validation failed",
+			append(logFields, zap.Error(err))...,
+		)
+		return apperror.NewPermanentError(err)
 	}
 
 	span.AddEvent("event.validated", otrace.WithAttributes(
 		attribute.String("eventType", metadata.EventType),
 	))
 
+	// --- Validate Bucket ---
 	if err := s.validateBucket(ctx, eventData.Bucket, metadata.ID, metadata.TraceID); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Bucket validation failed")
-		span.AddEvent("validation.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
-		s.logger.Error("Bucket validation failed",
-			zap.String("eventId", metadata.ID),
-			zap.String("traceId", metadata.TraceID),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-
-			zap.Error(err))
-		return err
+		s.logger.Warn("bucket validation failed",
+			append(logFields, zap.Error(err))...,
+		)
+		return apperror.NewPermanentError(err)
 	}
 
 	span.AddEvent("bucket.validated", otrace.WithAttributes(
 		attribute.String("bucket", eventData.Bucket),
 	))
 
-	ctx, objectPathSpan := tracer.Start(ctx, "IngestionService.validateObjectPath", otrace.WithSpanKind(otrace.SpanKindClient))
+	// --- Validate Object Path ---
 	userId, videoId, err := s.validateObjectPath(ctx, eventData.Name, metadata.ID, metadata.TraceID)
-	objectPathSpan.End()
 	if err != nil {
-		objectPathSpan.RecordError(err)
-		objectPathSpan.SetStatus(codes.Error, "Object path validation failed")
-		objectPathSpan.AddEvent("validation.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Object path validation failed")
-		s.logger.Error("Object path validation failed",
-			zap.String("eventId", metadata.ID),
-			zap.String("traceId", metadata.TraceID),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-
-			zap.Error(err))
-		return err
+		s.logger.Warn("object path validation failed",
+			append(logFields, zap.Error(err))...,
+		)
+		return apperror.NewPermanentError(err)
 	}
 
 	span.SetAttributes(
 		attribute.String("userId", userId),
 		attribute.String("videoId", videoId),
+	)
+	logFields = append(logFields,
+		zap.String("userId", userId),
+		zap.String("videoId", videoId),
 	)
 
 	span.AddEvent("objectPath.validated", otrace.WithAttributes(
@@ -137,30 +131,37 @@ func (s *IngestionService) ProcessUpload(ctx context.Context, metadata *dto.Meta
 		attribute.String("videoId", videoId),
 	))
 
-	ctx, fileValidationSpan := tracer.Start(ctx, "IngestionService.validateFile", otrace.WithSpanKind(otrace.SpanKindClient))
+	// --- Validate File ---
 	if err := s.validateFile(ctx, eventData, metadata.ID, metadata.TraceID, userId, videoId); err != nil {
-		fileValidationSpan.RecordError(err)
-		fileValidationSpan.SetStatus(codes.Error, "File validation failed")
-		fileValidationSpan.AddEvent("validation.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
-		fileValidationSpan.End()
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "File validation failed")
-		s.logger.Error("File validation failed",
-			zap.String("eventId", metadata.ID),
-			zap.String("traceId", metadata.TraceID),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-
-			zap.Error(err))
-		return err
+		// If the error is already classified (e.g. from GCS read), return as-is.
+		var permErr *apperror.PermanentError
+		var transErr *apperror.TransientError
+		if errors.As(err, &permErr) || errors.As(err, &transErr) {
+			s.logger.Warn("file validation failed",
+				append(logFields, zap.Error(err))...,
+			)
+			return err
+		}
+		// Pure validation error from validator functions.
+		s.logger.Warn("file validation failed",
+			append(logFields, zap.Error(err))...,
+		)
+		return apperror.NewPermanentError(err)
 	}
-	fileValidationSpan.End()
 
 	span.AddEvent("file.validated", otrace.WithAttributes(
 		attribute.String("contentType", eventData.ContentType),
 		attribute.String("size", eventData.Size),
 	))
+
+	s.logger.Info("all validations passed",
+		append(logFields,
+			zap.String("action", "validate_all"),
+			zap.String("outcome", "success"),
+		)...,
+	)
 
 	filePath := fmt.Sprintf("gs://%s/%s", eventData.Bucket, eventData.Name)
 
@@ -172,97 +173,129 @@ func (s *IngestionService) ProcessUpload(ctx context.Context, metadata *dto.Meta
 		repository.FileHashField:    eventData.MDFHash,
 	}
 
-	ctx, firestoreSpan := tracer.Start(ctx, "IngestionService.TransitionStatus", otrace.WithSpanKind(otrace.SpanKindClient))
-	err = s.firestore.TransitionStatus(ctx, metadata.ID, metadata.TraceID, userId, eventData.MDFHash, PENDING_UPLOAD_STATUS, ENQUEUING_STATUS, updates)
-	firestoreSpan.End()
+	// --- Firestore: PENDING_UPLOAD -> ENQUEUING ---
+	ctx, firestoreSpan := tracer.Start(ctx, "IngestionService.TransitionStatus",
+		otrace.WithSpanKind(otrace.SpanKindClient),
+		otrace.WithAttributes(
+			attribute.String("fromStatus", PENDING_UPLOAD_STATUS),
+			attribute.String("toStatus", ENQUEUING_STATUS),
+		))
+	err = s.firestore.TransitionStatus(ctx, metadata.ID, metadata.TraceID, userId, videoId, PENDING_UPLOAD_STATUS, ENQUEUING_STATUS, updates)
 	if err != nil {
 		firestoreSpan.RecordError(err)
 		firestoreSpan.SetStatus(codes.Error, "Failed to transition video status in Firestore")
-		firestoreSpan.AddEvent("firestore.error", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "Failed to transition video status in Firestore")
-		s.logger.Error("Failed to transition video status in Firestore",
-			zap.String("eventId", metadata.ID),
-			zap.String("traceId", metadata.TraceID),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
+		firestoreSpan.End()
 
-			zap.String("video_id", eventData.MDFHash),
-			zap.Error(err))
-		return err
+		// Classify the repository error at the service layer.
+		if errors.Is(err, repository.ErrDocumentNotFound) {
+			s.logger.Warn("firestore document not found during status transition",
+				append(logFields, zap.Error(err))...,
+			)
+			return apperror.NewPermanentError(fmt.Errorf("video document not found: %s: %w", videoId, err))
+		}
+		if isAlreadyProcessed(err) {
+			s.logger.Info("video already processed, skipping",
+				append(logFields, zap.Error(err))...,
+			)
+			return apperror.NewIdempotencyError(fmt.Errorf("video %s already processed: %w", videoId, err))
+		}
+		classified := apperror.ClassifyError(fmt.Sprintf("firestore transition for %s", videoId), err)
+		s.logger.Error("firestore status transition failed",
+			append(logFields, zap.Error(err))...,
+		)
+		return classified
 	}
-
-	span.AddEvent("firestore.statusTransition.completed", otrace.WithAttributes(
+	firestoreSpan.AddEvent("firestore.statusTransition.completed", otrace.WithAttributes(
 		attribute.String("from", PENDING_UPLOAD_STATUS),
-		attribute.String("to", QUEUED_STATUS),
+		attribute.String("to", ENQUEUING_STATUS),
 	))
+	firestoreSpan.End()
 
+	s.logger.Info("status transitioned in Firestore",
+		append(logFields,
+			zap.String("action", "transition_status"),
+			zap.String("outcome", "success"),
+			zap.String("fromStatus", PENDING_UPLOAD_STATUS),
+			zap.String("toStatus", ENQUEUING_STATUS),
+		)...,
+	)
+
+	// --- Enqueue Cloud Task ---
 	payload := dto.TranscoderServicePayload{
 		EventID:     metadata.ID,
 		TraceID:     metadata.TraceID,
+		ContentType: eventData.ContentType,
+		FileSize:    eventData.Size,
 		VideoID:     videoId,
 		UserID:      userId,
 		RawFilePath: filePath,
 	}
 
-	ctx, cloudTaskSpan := tracer.Start(ctx, "IngestionService.EnqueueTranscodeTask", otrace.WithSpanKind(otrace.SpanKindClient))
+	ctx, cloudTaskSpan := tracer.Start(ctx, "IngestionService.EnqueueTranscodeTask",
+		otrace.WithSpanKind(otrace.SpanKindClient))
 	err = s.cloudTask.EnqueueTranscodeTask(ctx, &payload)
-	cloudTaskSpan.End()
 	if err != nil {
 		cloudTaskSpan.RecordError(err)
 		cloudTaskSpan.SetStatus(codes.Error, "Failed to create Cloud Task for transcoding")
-		cloudTaskSpan.AddEvent("cloudtask.error", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "Failed to create Cloud Task for transcoding")
-		s.logger.Error("Failed to create Cloud Task for transcoding",
-			zap.String("eventId", metadata.ID),
-			zap.String("traceId", metadata.TraceID),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
+		cloudTaskSpan.End()
 
-			zap.String("video_id", eventData.MDFHash),
-			zap.Error(err))
-		return err
+		// Classify the repository error at the service layer.
+		if errors.Is(err, repository.ErrTaskAlreadyExists) {
+			s.logger.Info("cloud task already exists, skipping",
+				append(logFields, zap.Error(err))...,
+			)
+			return apperror.NewIdempotencyError(fmt.Errorf("cloud task already exists for video %s: %w", videoId, err))
+		}
+		classified := apperror.ClassifyError(fmt.Sprintf("cloud task create for %s", videoId), err)
+		s.logger.Error("failed to create Cloud Task for transcoding",
+			append(logFields, zap.Error(err))...,
+		)
+		return classified
 	}
-
-	span.AddEvent("cloudtask.enqueued", otrace.WithAttributes(
+	cloudTaskSpan.AddEvent("cloudtask.enqueued", otrace.WithAttributes(
 		attribute.String("videoId", videoId),
 		attribute.String("userId", userId),
 	))
+	cloudTaskSpan.End()
 
-	err = s.firestore.TransitionStatus(ctx, metadata.ID, metadata.TraceID, userId, eventData.MDFHash, ENQUEUING_STATUS, QUEUED_STATUS, updates)
-	if err != nil {
-		firestoreSpan.RecordError(err)
-		firestoreSpan.SetStatus(codes.Error, "Failed to transition video status in Firestore")
-		firestoreSpan.AddEvent("firestore.error", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
+	// --- Firestore: ENQUEUING -> QUEUED ---
+	ctx, firestoreSpan2 := tracer.Start(ctx, "IngestionService.TransitionStatus",
+		otrace.WithSpanKind(otrace.SpanKindClient),
+		otrace.WithAttributes(
+			attribute.String("fromStatus", ENQUEUING_STATUS),
+			attribute.String("toStatus", QUEUED_STATUS),
 		))
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "Failed to transition video status in Firestore")
-		s.logger.Error("Failed to transition video status in Firestore",
-			zap.String("eventId", metadata.ID),
-			zap.String("traceId", metadata.TraceID),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
+	err = s.firestore.TransitionStatus(ctx, metadata.ID, metadata.TraceID, userId, videoId, ENQUEUING_STATUS, QUEUED_STATUS, updates)
+	if err != nil {
+		firestoreSpan2.RecordError(err)
+		firestoreSpan2.SetStatus(codes.Error, "Failed to transition video status in Firestore")
+		firestoreSpan2.End()
 
-			zap.String("video_id", eventData.MDFHash),
-			zap.Error(err))
-		return err
+		if isAlreadyProcessed(err) {
+			s.logger.Info("video already processed during second transition, skipping",
+				append(logFields, zap.Error(err))...,
+			)
+			return apperror.NewIdempotencyError(fmt.Errorf("video %s already processed: %w", videoId, err))
+		}
+		classified := apperror.ClassifyError(fmt.Sprintf("firestore transition to queued for %s", videoId), err)
+		s.logger.Error("firestore status transition failed",
+			append(logFields, zap.Error(err))...,
+		)
+		return classified
 	}
-
-	span.AddEvent("firestore.statusTransition.completed", otrace.WithAttributes(
-		attribute.String("from", PENDING_UPLOAD_STATUS),
+	firestoreSpan2.AddEvent("firestore.statusTransition.completed", otrace.WithAttributes(
+		attribute.String("from", ENQUEUING_STATUS),
 		attribute.String("to", QUEUED_STATUS),
 	))
+	firestoreSpan2.End()
 
-	s.logger.Info("Successfully processed upload",
-		zap.String("eventId", metadata.ID),
-		zap.String("traceId", metadata.TraceID),
-		zap.String("spanId", span.SpanContext().SpanID().String()),
-		zap.String("userId", userId),
-		zap.String("videoId", videoId),
-		zap.String("filePath", filePath))
+	s.logger.Info("successfully processed upload",
+		append(logFields,
+			zap.String("action", "process_upload"),
+			zap.String("outcome", "success"),
+			zap.String("filePath", filePath),
+		)...,
+	)
 
 	return nil
 }
@@ -270,7 +303,7 @@ func (s *IngestionService) ProcessUpload(ctx context.Context, metadata *dto.Meta
 func (s *IngestionService) validateEvent(ctx context.Context, metadata *dto.MetaData) error {
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-ingestion-service")
 	_, span := tracer.Start(ctx, "IngestionService.validateEvent",
-		otrace.WithSpanKind(otrace.SpanKindClient),
+		otrace.WithSpanKind(otrace.SpanKindInternal),
 		otrace.WithAttributes(
 			attribute.String("eventId", metadata.ID),
 			attribute.String("traceId", metadata.TraceID),
@@ -279,42 +312,18 @@ func (s *IngestionService) validateEvent(ctx context.Context, metadata *dto.Meta
 		))
 	defer span.End()
 
-	err := s.validator.ValidateEventType(metadata.EventType)
-	if err != nil {
+	if err := s.validator.ValidateEventType(metadata.EventType); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Invalid event type")
-		span.AddEvent("eventType.invalid", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
-		s.logger.Error("Invalid event type",
-			zap.String("eventId", metadata.ID),
-			zap.String("traceId", metadata.TraceID),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("eventType", metadata.EventType),
-
-			zap.Error(err))
 		return err
 	}
-
 	span.AddEvent("eventType.validated")
 
-	err = s.validator.ValidateEventAge(metadata.EventTime)
-	if err != nil {
+	if err := s.validator.ValidateEventAge(metadata.EventTime); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Invalid event timestamp")
-		span.AddEvent("eventTime.invalid", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
-		s.logger.Error("Invalid event timestamp",
-			zap.String("eventId", metadata.ID),
-			zap.String("traceId", metadata.TraceID),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("time_created", metadata.EventTime),
-
-			zap.Error(err))
 		return err
 	}
-
 	span.AddEvent("eventTime.validated")
 
 	return nil
@@ -323,7 +332,7 @@ func (s *IngestionService) validateEvent(ctx context.Context, metadata *dto.Meta
 func (s *IngestionService) validateObjectPath(ctx context.Context, objectName string, eventId string, traceId string) (string, string, error) {
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-ingestion-service")
 	_, span := tracer.Start(ctx, "IngestionService.validateObjectPath",
-		otrace.WithSpanKind(otrace.SpanKindClient),
+		otrace.WithSpanKind(otrace.SpanKindInternal),
 		otrace.WithAttributes(
 			attribute.String("eventId", eventId),
 			attribute.String("traceId", traceId),
@@ -335,19 +344,8 @@ func (s *IngestionService) validateObjectPath(ctx context.Context, objectName st
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to parse object path")
-		span.AddEvent("parse.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
-		s.logger.Error("Failed to parse object path",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-
-			zap.String("object_name", objectName),
-			zap.Error(err))
 		return "", "", err
 	}
-
 	span.AddEvent("objectPath.parsed", otrace.WithAttributes(
 		attribute.String("userId", userID),
 		attribute.String("videoId", videoId),
@@ -356,44 +354,16 @@ func (s *IngestionService) validateObjectPath(ctx context.Context, objectName st
 	if err := s.validator.ValidatePathSegment("user_id", userID); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Invalid user_id in object path")
-		span.AddEvent("validation.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-			attribute.String("segment", "user_id"),
-		))
-		s.logger.Error("Invalid user_id in object path",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-
-			zap.String("user_id", userID),
-			zap.Error(err))
 		return "", "", err
 	}
-
 	span.AddEvent("userId.validated")
 
 	if err := s.validator.ValidatePathSegment("video_id", videoId); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Invalid video_id in object path")
-		span.AddEvent("validation.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-			attribute.String("segment", "video_id"),
-		))
-		s.logger.Error("Invalid video_id in object path",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-
-			zap.String("video_id", videoId),
-			zap.Error(err))
 		return "", "", err
 	}
-
 	span.AddEvent("videoId.validated")
-
-	span.AddEvent("validation.completed", otrace.WithAttributes(
-		attribute.String("status", "success"),
-	))
 
 	return userID, videoId, nil
 }
@@ -401,7 +371,7 @@ func (s *IngestionService) validateObjectPath(ctx context.Context, objectName st
 func (s *IngestionService) validateBucket(ctx context.Context, bucket string, eventId string, traceId string) error {
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-ingestion-service")
 	_, span := tracer.Start(ctx, "IngestionService.validateBucket",
-		otrace.WithSpanKind(otrace.SpanKindClient),
+		otrace.WithSpanKind(otrace.SpanKindInternal),
 		otrace.WithAttributes(
 			attribute.String("eventId", eventId),
 			attribute.String("traceId", traceId),
@@ -414,30 +384,17 @@ func (s *IngestionService) validateBucket(ctx context.Context, bucket string, ev
 		err := validation.ErrUnexpectedBucket
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Bucket name does not match expected value")
-		span.AddEvent("validation.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
-		s.logger.Error("Bucket name does not match expected value",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-
-			zap.String("bucket", bucket),
-			zap.String("expected_bucket", s.cfg.GCSBucket))
 		return err
 	}
 
-	span.AddEvent("validation.completed", otrace.WithAttributes(
-		attribute.String("status", "success"),
-	))
-
+	span.AddEvent("validation.completed")
 	return nil
 }
 
 func (s *IngestionService) validateFile(ctx context.Context, eventData *dto.GCSObjectData, eventId string, traceId string, userId string, videoId string) error {
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-ingestion-service")
 	ctx, span := tracer.Start(ctx, "IngestionService.validateFile",
-		otrace.WithSpanKind(otrace.SpanKindClient),
+		otrace.WithSpanKind(otrace.SpanKindInternal),
 		otrace.WithAttributes(
 			attribute.String("eventId", eventId),
 			attribute.String("traceId", traceId),
@@ -452,18 +409,6 @@ func (s *IngestionService) validateFile(ctx context.Context, eventData *dto.GCSO
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to parse file size")
-		span.AddEvent("parse.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
-		s.logger.Error("Failed to parse file size",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.String("file_size", eventData.Size),
-			zap.Error(err))
 		return err
 	}
 
@@ -472,80 +417,46 @@ func (s *IngestionService) validateFile(ctx context.Context, eventData *dto.GCSO
 	if err := s.validator.ValidateFileSize(fileSize, s.cfg.MaxFileSizeBytes, s.cfg.MinFileSizeBytes); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "File size validation failed")
-		span.AddEvent("validation.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
-		s.logger.Error("File size validation failed",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Int64("file_size", fileSize),
-			zap.Error(err))
 		return err
 	}
+	span.AddEvent("fileSize.validated")
 
-	span.AddEvent("fileSize.validated", otrace.WithAttributes(
-		attribute.Int64("fileSize", fileSize),
-	))
-
-	ctx, headerSpan := tracer.Start(ctx, "IngestionService.ReadObjectHeader", otrace.WithSpanKind(otrace.SpanKindClient))
+	// Read object header for magic byte validation
+	ctx, headerSpan := tracer.Start(ctx, "IngestionService.ReadObjectHeader",
+		otrace.WithSpanKind(otrace.SpanKindClient))
 	header, err := s.storage.ReadObjectHeader(ctx, eventId, traceId, userId, videoId, eventData.Bucket, eventData.Name, s.cfg.MagicByteHeaderSize)
-	headerSpan.End()
 	if err != nil {
 		headerSpan.RecordError(err)
 		headerSpan.SetStatus(codes.Error, "Failed to read object header")
-		headerSpan.AddEvent("read.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
-		s.logger.Error("Failed to read object header for magic byte validation",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
+		headerSpan.End()
 
-			zap.String("bucket", eventData.Bucket),
-			zap.String("object_name", eventData.Name),
-			zap.Error(err))
-		return err
+		// Classify the GCS repository error at the service layer.
+		if errors.Is(err, repository.ErrObjectNotFound) {
+			return apperror.NewPermanentError(fmt.Errorf("GCS object not found for %s: %w", videoId, err))
+		}
+		return apperror.ClassifyError(fmt.Sprintf("gcs read header for %s", videoId), err)
 	}
-
-	span.AddEvent("objectHeader.read", otrace.WithAttributes(
+	headerSpan.AddEvent("header.read", otrace.WithAttributes(
 		attribute.Int("headerSize", len(header)),
 	))
+	headerSpan.End()
 
-	_, magicByteSpan := tracer.Start(ctx, "IngestionService.ValidateMagicBytes", otrace.WithSpanKind(otrace.SpanKindClient))
+	// Validate magic bytes
+	_, magicByteSpan := tracer.Start(ctx, "IngestionService.ValidateMagicBytes",
+		otrace.WithSpanKind(otrace.SpanKindInternal))
 	detectedFormat, err := s.validator.ValidateMagicBytes(header, s.cfg.AllowedVideoFormats)
-	magicByteSpan.End()
 	if err != nil {
 		magicByteSpan.RecordError(err)
 		magicByteSpan.SetStatus(codes.Error, "Magic byte validation failed")
-		magicByteSpan.AddEvent("validation.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
-		s.logger.Error("Magic byte validation failed",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.String("object_name", eventData.Name),
-			zap.Error(err))
+		magicByteSpan.End()
 		return err
 	}
-
-	span.AddEvent("magicBytes.validated", otrace.WithAttributes(
+	magicByteSpan.AddEvent("magicBytes.validated", otrace.WithAttributes(
 		attribute.String("detectedFormat", detectedFormat),
 	))
+	magicByteSpan.End()
 
-	span.AddEvent("validation.completed", otrace.WithAttributes(
-		attribute.String("status", "success"),
-	))
-
+	span.AddEvent("validation.completed")
 	return nil
 }
 
@@ -556,6 +467,12 @@ func parseSize(sizeStr string) (int64, error) {
 		return 0, fmt.Errorf("failed to parse size string: %w", err)
 	}
 	return size, nil
+}
+
+// isAlreadyProcessed checks if the error wraps the ErrAlreadyProcessed
+// sentinel from the firestore repository.
+func isAlreadyProcessed(err error) bool {
+	return errors.Is(err, repository.ErrAlreadyProcessed)
 }
 
 var _ IngestionInterface = (*IngestionService)(nil)

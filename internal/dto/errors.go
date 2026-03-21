@@ -3,35 +3,20 @@ package dto
 // ErrorCode represents standardized machine-readable error codes returned in
 // API error responses. Clients can switch on these codes to handle specific
 // error conditions programmatically.
+//
+// Possible values:
+//   - invalid_request: The request is malformed, missing required fields, or violates domain rules. Do not retry.
+//   - internal: An unexpected server-side error occurred. Safe to retry with back-off.
 type ErrorCode string
 
 const (
-	// ErrorCodeInvalidArgument indicates malformed or invalid request parameters (HTTP 400).
-	ErrorCodeInvalidArgument ErrorCode = "invalid_argument"
-	// ErrorCodeUnauthorized indicates missing or invalid authentication credentials (HTTP 401).
-	ErrorCodeUnauthorized ErrorCode = "unauthorized"
-	// ErrorCodeForbidden indicates the caller lacks permission for the requested action (HTTP 403).
-	ErrorCodeForbidden ErrorCode = "forbidden"
-	// ErrorCodeNotFound indicates the requested resource does not exist (HTTP 404).
-	ErrorCodeNotFound ErrorCode = "not_found"
-	// ErrorCodeGone indicates the resource existed but has been permanently removed or expired (HTTP 410).
-	ErrorCodeGone ErrorCode = "gone"
-	// ErrorCodeConflict indicates a state conflict, such as duplicate idempotency key with different parameters (HTTP 409).
-	ErrorCodeConflict ErrorCode = "conflict"
-	// ErrorCodeRateLimited indicates the caller has exceeded the allowed request rate (HTTP 429).
-	ErrorCodeRateLimited ErrorCode = "rate_limited"
-	// ErrorCodeNotImplemented indicates the requested feature is not yet available (HTTP 501).
-	ErrorCodeNotImplemented ErrorCode = "not_implemented"
-	// ErrorCodeInternal indicates an unexpected server-side error (HTTP 500).
+	// ErrorCodeInvalidRequest indicates a client error: malformed payload,
+	// missing required headers, or a domain validation failure. The request
+	// should not be retried without modification.
+	ErrorCodeInvalidRequest ErrorCode = "invalid_request"
+	// ErrorCodeInternal indicates a transient server-side error. The request
+	// may succeed if retried with exponential back-off.
 	ErrorCodeInternal ErrorCode = "internal"
-	// ErrorCodeInvalidEventType indicates the event type in the request is not supported (HTTP 400).
-	ErrorCodeInvalidEventType ErrorCode = "invalid_event_type"
-	// ErrorCodeInvalidPath indicates the GCS object path contains invalid characters or path traversal (HTTP 400).
-	ErrorCodeInvalidPath ErrorCode = "invalid_path"
-	// ErrorCodeRequestTimeout indicates the CloudEvent timestamp exceeds the allowed age threshold (HTTP 408).
-	ErrorCodeRequestTimeout ErrorCode = "request_timeout"
-	// ErrorCodeUnsupportedMediaType indicates the file format is not supported (HTTP 415).
-	ErrorCodeUnsupportedMediaType ErrorCode = "unsupported_media_type"
 )
 
 // ErrorDetail provides field-level error information, typically for validation failures.
@@ -43,17 +28,19 @@ type ErrorDetail struct {
 }
 
 // ErrorResponse is the top-level envelope for all API error responses.
+// Every non-2xx response body conforms to this schema.
 type ErrorResponse struct {
+	// Error contains the structured error payload.
 	Error ErrorPayload `json:"error"`
 }
 
 // ErrorPayload carries the structured error information returned to API clients.
 type ErrorPayload struct {
 	// Code is the machine-readable error classification.
-	Code ErrorCode `json:"code" example:"invalid_argument"`
-	// Message is a human-readable summary of the error.
+	Code ErrorCode `json:"code" example:"invalid_request" enums:"invalid_request,internal"`
+	// Message is a human-readable summary of the error suitable for display.
 	Message string `json:"message" example:"Validation failed"`
-	// RequestID is the correlation ID for tracing this request in logs and observability tools.
+	// RequestID is the correlation ID for tracing this request across logs and observability tools.
 	RequestID string `json:"requestId,omitempty" example:"req_6f1a2c9d5e7b3a1c"`
 	// Details contains field-level error information when applicable.
 	Details []ErrorDetail `json:"details,omitempty"`

@@ -13,16 +13,14 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	otrace "go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	grpccodes "google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-var (
-	ErrTransientError    = errors.New("transient error, retryable")
-	ErrNonRetryableError = errors.New("non-retryable error")
-)
+var ErrTaskAlreadyExists = errors.New("cloud task already exists")
 
 type CloudTasksRepo struct {
 	logger *zap.Logger
@@ -38,12 +36,25 @@ func NewTasksRepo(logger *zap.Logger, client *cloudtasks.Client, cfg *config.Con
 	}
 }
 
+// headerCarrier adapts a map[string]string for use as an OTel TextMapCarrier,
+// allowing trace context to be injected into HTTP headers for Cloud Tasks.
+type headerCarrier map[string]string
+
+func (c headerCarrier) Get(key string) string { return c[key] }
+func (c headerCarrier) Set(key, value string) { c[key] = value }
+func (c headerCarrier) Keys() []string {
+	keys := make([]string, 0, len(c))
+	for k := range c {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.TranscoderServicePayload) error {
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-ingestion-service")
 	ctx, span := tracer.Start(ctx, "CloudTasksRepo.EnqueueTranscodeTask",
 		otrace.WithSpanKind(otrace.SpanKindClient),
 		otrace.WithAttributes(
-			attribute.String("operation", "EnqueueTranscodeTask"),
 			attribute.String("eventId", payload.EventID),
 			attribute.String("traceId", payload.TraceID),
 			attribute.String("userId", payload.UserID),
@@ -52,20 +63,26 @@ func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.
 		))
 	defer span.End()
 
+	logFields := []zap.Field{
+		zap.String("component", "repository.cloudtasks"),
+		zap.String("action", "enqueue_transcode_task"),
+		zap.String("eventId", payload.EventID),
+		zap.String("traceId", payload.TraceID),
+		zap.String("spanId", span.SpanContext().SpanID().String()),
+		zap.String("userId", payload.UserID),
+		zap.String("videoId", payload.VideoID),
+	}
+
 	body, err := json.Marshal(payload)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to marshal task payload")
-		span.AddEvent("marshal.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
 		r.logger.Error("Failed to marshal task payload",
-			zap.String("eventId", payload.EventID),
-			zap.String("traceId", payload.TraceID),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("userId", payload.UserID),
-			zap.String("videoId", payload.VideoID),
-			zap.Error(err))
+			append(logFields,
+				zap.String("outcome", "failure"),
+				zap.Error(err),
+			)...,
+		)
 		return fmt.Errorf("failed to marshal task payload: %w", err)
 	}
 
@@ -73,26 +90,27 @@ func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.
 		attribute.Int("payloadSize", len(body)),
 	))
 
-	taskName := fmt.Sprintf("projects/%s/locations/%s/queues/%s/tasks/%s", r.cfg.GCPProjectID, r.cfg.ProjectRegion, r.cfg.CloudTasksQueueName, payload.VideoID)
-
 	span.SetAttributes(
-		attribute.String("taskName", taskName),
 		attribute.String("queueName", r.cfg.CloudTasksQueueName),
 		attribute.String("targetUrl", r.cfg.TranscoderServiceUrl),
 	)
 
+	// Inject trace context into Cloud Task HTTP headers so the downstream
+	// transcoder service can continue the distributed trace.
+	headers := map[string]string{
+		"Content-Type": "application/json",
+	}
+	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(headers))
+
 	req := &cloudtaskspb.CreateTaskRequest{
 		Parent: r.cfg.CloudTasksQueuePath,
 		Task: &cloudtaskspb.Task{
-			// Name: taskName,
 			MessageType: &cloudtaskspb.Task_HttpRequest{
 				HttpRequest: &cloudtaskspb.HttpRequest{
 					HttpMethod: cloudtaskspb.HttpMethod_POST,
 					Url:        r.cfg.TranscoderServiceUrl + "/api/v1/",
-					Headers: map[string]string{
-						"Content-Type": "application/json",
-					},
-					Body: body,
+					Headers:    headers,
+					Body:       body,
 					AuthorizationHeader: &cloudtaskspb.HttpRequest_OidcToken{
 						OidcToken: &cloudtaskspb.OidcToken{
 							ServiceAccountEmail: r.cfg.ServiceAccountEmail,
@@ -107,17 +125,27 @@ func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to create Cloud Task")
-		span.AddEvent("createTask.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
+
+		// Return a domain sentinel for AlreadyExists so the service layer
+		// can wrap it as an IdempotencyError.
+		if status.Code(err) == grpccodes.AlreadyExists {
+			r.logger.Warn("Cloud Task already exists",
+				append(logFields,
+					zap.String("outcome", "failure"),
+					zap.String("grpcCode", "ALREADY_EXISTS"),
+					zap.Error(err),
+				)...,
+			)
+			return fmt.Errorf("cloud task for video %s: %w", payload.VideoID, ErrTaskAlreadyExists)
+		}
+
 		r.logger.Error("Failed to create Cloud Task",
-			zap.String("eventId", payload.EventID),
-			zap.String("traceId", payload.TraceID),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("userId", payload.UserID),
-			zap.String("videoId", payload.VideoID),
-			zap.Error(err))
-		return r.classifyError(err, payload)
+			append(logFields,
+				zap.String("outcome", "failure"),
+				zap.Error(err),
+			)...,
+		)
+		return fmt.Errorf("cloud task create for video %s: %w", payload.VideoID, err)
 	}
 
 	span.AddEvent("task.created", otrace.WithAttributes(
@@ -125,54 +153,13 @@ func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.
 	))
 
 	r.logger.Info("Successfully created Cloud Task",
-		zap.String("eventId", payload.EventID),
-		zap.String("traceId", payload.TraceID),
-		zap.String("spanId", span.SpanContext().SpanID().String()),
-		zap.String("userId", payload.UserID),
-		zap.String("videoId", payload.VideoID),
-		zap.String("taskName", resp.GetName()))
+		append(logFields,
+			zap.String("outcome", "success"),
+			zap.String("taskName", resp.GetName()),
+		)...,
+	)
 
 	return nil
-}
-
-func (r *CloudTasksRepo) classifyError(err error, payload *dto.TranscoderServicePayload) error {
-	code := status.Code(err)
-	switch code {
-	case grpccodes.AlreadyExists:
-		r.logger.Warn("Task already exists",
-			zap.String("eventId", payload.EventID),
-			zap.String("traceId", payload.TraceID),
-			zap.String("userId", payload.UserID),
-			zap.String("videoId", payload.VideoID),
-			zap.Error(err))
-		return nil
-	case grpccodes.Unavailable, grpccodes.DeadlineExceeded, grpccodes.ResourceExhausted, grpccodes.Internal, grpccodes.Aborted:
-		r.logger.Error("transient Cloud Tasks error, retrying",
-			zap.String("eventId", payload.EventID),
-			zap.String("traceId", payload.TraceID),
-			zap.String("userId", payload.UserID),
-			zap.String("videoId", payload.VideoID),
-			zap.Error(err))
-		return fmt.Errorf("transient cloud tasks error for video: %s: %w", payload.VideoID, ErrTransientError)
-
-	case grpccodes.InvalidArgument, grpccodes.PermissionDenied, grpccodes.NotFound, grpccodes.FailedPrecondition:
-		r.logger.Error("Non-retryable Cloud Tasks error",
-			zap.String("eventId", payload.EventID),
-			zap.String("traceId", payload.TraceID),
-			zap.String("userId", payload.UserID),
-			zap.String("videoId", payload.VideoID),
-			zap.Error(err))
-		return fmt.Errorf("non-retryable cloud tasks error for video %s: %w", payload.VideoID, ErrNonRetryableError)
-	default:
-		r.logger.Error("Non-retryable Cloud Tasks error",
-			zap.String("eventId", payload.EventID),
-			zap.String("traceId", payload.TraceID),
-			zap.String("userId", payload.UserID),
-			zap.String("videoId", payload.VideoID),
-			zap.Error(err))
-		return fmt.Errorf("non-retryable cloud tasks error for video %s: %w", payload.VideoID, ErrNonRetryableError)
-	}
-
 }
 
 var _ CloudTaskInterface = (*CloudTasksRepo)(nil)

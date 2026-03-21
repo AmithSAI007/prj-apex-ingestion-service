@@ -16,9 +16,8 @@ import (
 )
 
 var (
-	ErrDocumentNotFound  = errors.New("document not found")
-	ErrTransactionFailed = errors.New("transaction failed")
-	ErrAlreadProcessed   = errors.New("video already processed")
+	ErrDocumentNotFound = errors.New("document not found")
+	ErrAlreadyProcessed = errors.New("video already processed")
 )
 
 const (
@@ -58,35 +57,55 @@ func (r *FirestoreRepo) TransitionStatus(ctx context.Context, eventId, traceId, 
 		))
 	defer span.End()
 
+	logFields := []zap.Field{
+		zap.String("component", "repository.firestore"),
+		zap.String("action", "transition_status"),
+		zap.String("eventId", eventId),
+		zap.String("traceId", traceId),
+		zap.String("spanId", span.SpanContext().SpanID().String()),
+		zap.String("userId", userId),
+		zap.String("videoId", videoId),
+		zap.String("fromStatus", from),
+		zap.String("toStatus", to),
+	}
+
+	r.logger.Debug("beginning Firestore status transition", logFields...)
+
 	docRef := r.docRef(videoId)
 
 	err := r.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		docSnap, err := tx.Get(docRef)
 		if err != nil {
-			return r.classifyError(err, eventId, traceId, userId, videoId)
+			if status.Code(err) == grpccodes.NotFound {
+				return ErrDocumentNotFound
+			}
+			return fmt.Errorf("firestore transaction read %s: %w", videoId, err)
 		}
 
-		statusStr, err := r.extractStatus(docSnap, eventId, traceId, userId, videoId)
+		rawStatus, err := docSnap.DataAt(StatusField)
 		if err != nil {
-			return err
+			return fmt.Errorf("firestore get status field for %s: %w", videoId, err)
 		}
 
-		if statusStr != from {
+		currentStatus, ok := rawStatus.(string)
+		if !ok {
+			return fmt.Errorf("firestore status field for %s: expected string, got: %T", videoId, rawStatus)
+		}
+
+		if currentStatus != from {
 			span.AddEvent("status.mismatch", otrace.WithAttributes(
 				attribute.String("expected", from),
-				attribute.String("actual", statusStr),
+				attribute.String("actual", currentStatus),
 			))
-			span.SetStatus(codes.Ok, "already_processed")
-			span.AddEvent("already_processed")
 			r.logger.Warn("Status transition mismatch - video already processed",
-				zap.String("eventId", eventId),
-				zap.String("traceId", traceId),
-				zap.String("spanId", span.SpanContext().SpanID().String()),
-				zap.String("userId", userId),
-				zap.String("videoId", videoId),
-				zap.String("expectedFrom", from),
-				zap.String("actualStatus", statusStr))
-			return fmt.Errorf("video %s: %w", videoId, ErrAlreadProcessed)
+				append(logFields,
+					zap.String("outcome", "skipped"),
+					zap.String("reason", "status_mismatch"),
+					zap.String("expectedFrom", from),
+					zap.String("actualStatus", currentStatus),
+				)...,
+			)
+			return fmt.Errorf("video %s: %w", videoId, ErrAlreadyProcessed)
 		}
 
 		firestoreUpdates := []firestore.Update{
@@ -99,47 +118,36 @@ func (r *FirestoreRepo) TransitionStatus(ctx context.Context, eventId, traceId, 
 		}
 
 		return tx.Update(docRef, firestoreUpdates)
-
 	})
 
 	if err != nil {
-		if isAppError(err) {
-			if errors.Is(err, ErrAlreadProcessed) {
-				return err
-			}
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
+		if isAlreadyProcessed(err) {
+			span.SetStatus(codes.Ok, "already_processed")
+			span.AddEvent("already_processed")
 			return err
 		}
 
+		span.SetStatus(codes.Error, "transition failed")
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "Firestore transaction failed")
-		span.AddEvent("transaction.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
-		r.logger.Error("Firestore transaction failed",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Error(err))
-		return r.classifyError(err, eventId, traceId, userId, videoId)
+		r.logger.Error("Firestore status transition failed",
+			append(logFields,
+				zap.String("outcome", "failure"),
+				zap.Error(err),
+			)...,
+		)
+		return err
 	}
 
-	span.AddEvent("transaction.completed", otrace.WithAttributes(
-		attribute.String("status", "success"),
-	))
+	span.AddEvent("firestore.status.transitioned",
+		otrace.WithAttributes(
+			attribute.String("from", from),
+			attribute.String("to", to),
+		),
+	)
 
-	r.logger.Info("Firestore status transition completed",
-		zap.String("eventId", eventId),
-		zap.String("traceId", traceId),
-		zap.String("spanId", span.SpanContext().SpanID().String()),
-		zap.String("userId", userId),
-		zap.String("videoId", videoId),
-		zap.String("fromStatus", from),
-		zap.String("toStatus", to))
+	r.logger.Info("Firestore status transitioned successfully",
+		append(logFields, zap.String("outcome", "success"))...,
+	)
 
 	return nil
 }
@@ -156,43 +164,76 @@ func (r *FirestoreRepo) GetVideoStatus(ctx context.Context, eventId, traceId, us
 		))
 	defer span.End()
 
+	logFields := []zap.Field{
+		zap.String("component", "repository.firestore"),
+		zap.String("action", "get_video_status"),
+		zap.String("eventId", eventId),
+		zap.String("traceId", traceId),
+		zap.String("spanId", span.SpanContext().SpanID().String()),
+		zap.String("userId", userId),
+		zap.String("videoId", videoId),
+	}
+
+	r.logger.Debug("reading document status from Firestore", logFields...)
+
 	docRef := r.docRef(videoId)
 	docSnap, err := docRef.Get(ctx)
 	if err != nil {
+		if status.Code(err) == grpccodes.NotFound {
+			span.SetStatus(codes.Error, "document not found")
+			span.RecordError(ErrDocumentNotFound)
+			r.logger.Warn("Firestore document not found",
+				append(logFields, zap.String("outcome", "failure"))...,
+			)
+			return "", ErrDocumentNotFound
+		}
+		span.SetStatus(codes.Error, "firestore get failed")
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "Failed to get video status")
-		span.AddEvent("get.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
-		r.logger.Error("Failed to get video status from Firestore",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Error(err))
-		return "", r.classifyError(err, eventId, traceId, userId, videoId)
+		r.logger.Error("failed to read Firestore document",
+			append(logFields,
+				zap.String("outcome", "failure"),
+				zap.Error(err),
+			)...,
+		)
+		return "", fmt.Errorf("firestore get document %s: %w", videoId, err)
 	}
 
-	statusStr, err := r.extractStatus(docSnap, eventId, traceId, userId, videoId)
+	rawStatus, err := docSnap.DataAt(StatusField)
 	if err != nil {
+		span.SetStatus(codes.Error, "missing status field")
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "Failed to extract status")
-		r.logger.Error("Failed to extract status from Firestore document",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
+		r.logger.Error("Firestore document missing status field",
+			append(logFields,
+				zap.String("outcome", "failure"),
+				zap.Error(err),
+			)...,
+		)
+		return "", fmt.Errorf("firestore get status field for %s: %w", videoId, err)
+	}
 
-			zap.Error(err))
+	statusStr, ok := rawStatus.(string)
+	if !ok {
+		err := fmt.Errorf("firestore status field for %s: expected string, got: %T", videoId, rawStatus)
+		span.SetStatus(codes.Error, "invalid status type")
+		span.RecordError(err)
+		r.logger.Error("Firestore status field has unexpected type",
+			append(logFields,
+				zap.String("outcome", "failure"),
+				zap.Any("raw_status", rawStatus),
+			)...,
+		)
 		return "", err
 	}
 
-	span.AddEvent("status.retrieved", otrace.WithAttributes(
-		attribute.String("status", statusStr),
-	))
+	span.SetAttributes(attribute.String("status", statusStr))
+	span.AddEvent("firestore.status.read")
+
+	r.logger.Info("Firestore document status retrieved",
+		append(logFields,
+			zap.String("outcome", "success"),
+			zap.String("status", statusStr),
+		)...,
+	)
 
 	return statusStr, nil
 }
@@ -209,6 +250,16 @@ func (r *FirestoreRepo) Exists(ctx context.Context, eventId, traceId, userId, vi
 		))
 	defer span.End()
 
+	logFields := []zap.Field{
+		zap.String("component", "repository.firestore"),
+		zap.String("action", "check_existence"),
+		zap.String("eventId", eventId),
+		zap.String("traceId", traceId),
+		zap.String("spanId", span.SpanContext().SpanID().String()),
+		zap.String("userId", userId),
+		zap.String("videoId", videoId),
+	}
+
 	docRef := r.docRef(videoId)
 
 	snap, err := docRef.Get(ctx)
@@ -220,19 +271,14 @@ func (r *FirestoreRepo) Exists(ctx context.Context, eventId, traceId, userId, vi
 			return false, nil
 		}
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "Failed to check document existence")
-		span.AddEvent("check.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
+		span.SetStatus(codes.Error, "failed to check document existence")
 		r.logger.Error("Failed to check document existence in Firestore",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Error(err))
-		return false, r.classifyError(err, eventId, traceId, userId, videoId)
+			append(logFields,
+				zap.String("outcome", "failure"),
+				zap.Error(err),
+			)...,
+		)
+		return false, fmt.Errorf("firestore check existence for %s: %w", videoId, err)
 	}
 
 	exists := snap.Exists()
@@ -244,162 +290,12 @@ func (r *FirestoreRepo) Exists(ctx context.Context, eventId, traceId, userId, vi
 }
 
 func (r *FirestoreRepo) docRef(videoId string) *firestore.DocumentRef {
-	// Helper method to get a document reference for a given video ID.
 	return r.client.Collection(r.collection).Doc(videoId)
 }
 
-func (r *FirestoreRepo) extractStatus(docSnap *firestore.DocumentSnapshot, eventId, traceId, userId, videoId string) (string, error) {
-	if !docSnap.Exists() {
-		return "", fmt.Errorf("video %s: %w", videoId, ErrDocumentNotFound)
-	}
-
-	currentStatus, err := docSnap.DataAt(StatusField)
-	if err != nil {
-		r.logger.Error("Failed to read status field",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Error(err))
-		return "", fmt.Errorf("video %s: %w", videoId, ErrTransactionFailed)
-	}
-
-	statusStr, ok := currentStatus.(string)
-	if !ok {
-		r.logger.Error("Status field is not a string",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Any("statusValue", currentStatus))
-		return "", fmt.Errorf("video %s: %w", videoId, ErrTransactionFailed)
-	}
-
-	return statusStr, nil
-}
-
-func (r *FirestoreRepo) classifyError(err error, eventId, traceId, userId, videoId string) error {
-	code := status.Code(err)
-	switch code {
-	case grpccodes.NotFound:
-		r.logger.Error("Document not found",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Error(err))
-		return fmt.Errorf("video %s: %w", videoId, ErrDocumentNotFound)
-
-	case grpccodes.InvalidArgument:
-		r.logger.Error("Invalid argument",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Error(err))
-		return fmt.Errorf("invalid argument for video %s: %w", videoId, ErrTransactionFailed)
-
-	case grpccodes.PermissionDenied:
-		r.logger.Error("Permission denied",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Error(err))
-		return fmt.Errorf("permission denied for video %s: %w", videoId, ErrTransactionFailed)
-
-	case grpccodes.Unauthenticated:
-		r.logger.Error("Unauthenticated",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Error(err))
-		return fmt.Errorf("unauthenticated access for video %s: %w", videoId, ErrTransactionFailed)
-
-	case grpccodes.Unavailable:
-		r.logger.Error("Firestore service unavailable",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Error(err))
-		return fmt.Errorf("firestore service unavailable for video %s: %w", videoId, ErrTransactionFailed)
-
-	case grpccodes.DeadlineExceeded:
-		r.logger.Error("Firestore operation timed out",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Error(err))
-		return fmt.Errorf("firestore operation timed out for video %s: %w", videoId, ErrTransactionFailed)
-
-	case grpccodes.ResourceExhausted:
-		r.logger.Error("Firestore resource exhausted",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Error(err))
-		return fmt.Errorf("firestore resource exhausted for video %s: %w", videoId, ErrTransactionFailed)
-
-	case grpccodes.Aborted:
-		r.logger.Error("Firestore transaction aborted",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Error(err))
-		return fmt.Errorf("firestore transaction aborted for video %s: %w", videoId, ErrTransactionFailed)
-
-	case grpccodes.Canceled:
-		r.logger.Error("Firestore operation cancelled",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Error(err))
-		return fmt.Errorf("firestore operation cancelled for video %s: %w", videoId, ErrTransactionFailed)
-
-	case grpccodes.Internal:
-		r.logger.Error("Internal Firestore error",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Error(err))
-		return fmt.Errorf("internal firestore error for video %s: %w", videoId, ErrTransactionFailed)
-
-	default:
-		r.logger.Error("Unexpected Firestore error",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.Error(err))
-		return fmt.Errorf("unexpected firestore error for video %s: %w", videoId, ErrTransactionFailed)
-	}
-
-}
-
-func isAppError(err error) bool {
-	return errors.Is(err, ErrDocumentNotFound) ||
-		errors.Is(err, ErrTransactionFailed) ||
-		errors.Is(err, ErrAlreadProcessed)
+// isAlreadyProcessed checks if the error wraps the internal errAlreadyProcessed sentinel.
+func isAlreadyProcessed(err error) bool {
+	return errors.Is(err, ErrAlreadyProcessed)
 }
 
 var _ FirestoreInterface = (*FirestoreRepo)(nil)

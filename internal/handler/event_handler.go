@@ -5,21 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
-	"cloud.google.com/go/storage"
+	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/apperror"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/dto"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/platform"
-	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/repository"
 	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/service"
-	"github.com/AmithSAI007/prj-apex-ingestion-service/internal/validation"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	otrace "go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
-	grpccodes "google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 type HeaderKey string
@@ -51,39 +46,44 @@ func (c mapCarrier) Keys() []string {
 	return keys
 }
 
-type EventHander struct {
+type EventHandler struct {
 	logger *zap.Logger
 	i      service.IngestionInterface
 }
 
-func NewEventHandler(logger *zap.Logger, i service.IngestionInterface) *EventHander {
-	return &EventHander{
+func NewEventHandler(logger *zap.Logger, i service.IngestionInterface) *EventHandler {
+	return &EventHandler{
 		logger: logger,
 		i:      i,
 	}
 }
 
-func (h *EventHander) Handle(ctx context.Context, data []byte, attrs map[string]string) platform.Result {
+func (h *EventHandler) Handle(ctx context.Context, messageId string, data []byte, attrs map[string]string) platform.Result {
 
 	ctx = otel.GetTextMapPropagator().Extract(ctx, mapCarrier(attrs))
 
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-ingestion-service")
-	ctx, span := tracer.Start(ctx, "EventHandler.Handle", otrace.WithSpanKind(otrace.SpanKindConsumer))
+	ctx, span := tracer.Start(ctx, "EventHandler.Handle", otrace.WithSpanKind(otrace.SpanKindConsumer),
+		otrace.WithAttributes(
+			attribute.String("messaging.message.id", messageId),
+		))
 
 	defer span.End()
 
 	meta, err := parseCloudEventMeta(attrs)
 	if err != nil {
-		h.logger.Error("Failed to parse CloudEvent metadata",
-			zap.Error(err),
+		h.logger.Warn("failed to parse CloudEvent metadata",
+			zap.String("component", "handler.event"),
+			zap.String("action", "parse_cloud_event_meta"),
+			zap.String("outcome", "ack"),
+			zap.String("reason", "malformed_message"),
+			zap.String("messageId", messageId),
 			zap.String("traceId", span.SpanContext().TraceID().String()),
-			zap.String("spanId", span.SpanContext().SpanID().String()))
+			zap.String("spanId", span.SpanContext().SpanID().String()),
+			zap.Error(err))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to parse CloudEvent metadata")
-		span.AddEvent("parseCloudEventMeta.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
-		return platform.ResultNack
+		return platform.ResultAck
 	}
 
 	meta.TraceID = span.SpanContext().TraceID().String()
@@ -97,17 +97,35 @@ func (h *EventHander) Handle(ctx context.Context, data []byte, attrs map[string]
 
 	span.AddEvent("event.received", otrace.WithAttributes(
 		attribute.String("event.id", meta.ID),
+		attribute.String("messageId", messageId),
 	))
+
+	h.logger.Info("event received from Pub/Sub",
+		zap.String("component", "handler.event"),
+		zap.String("action", "receive_message"),
+		zap.String("outcome", "success"),
+		zap.String("messageId", messageId),
+		zap.String("eventId", meta.ID),
+		zap.String("traceId", meta.TraceID),
+		zap.String("spanId", span.SpanContext().SpanID().String()),
+		zap.String("eventType", meta.EventType),
+		zap.String("source", meta.Source))
 
 	var eventData dto.GCSObjectData
 	if err := json.Unmarshal(data, &eventData); err != nil {
-		h.logger.Error("Failed to unmarshal event data",
-			zap.Error(err),
-			zap.String("traceId", span.SpanContext().TraceID().String()),
-			zap.String("spanId", span.SpanContext().SpanID().String()))
+		h.logger.Warn("failed to unmarshal event data",
+			zap.String("component", "handler.event"),
+			zap.String("action", "unmarshal_event_data"),
+			zap.String("outcome", "ack"),
+			zap.String("reason", "malformed_message"),
+			zap.String("messageId", messageId),
+			zap.String("eventId", meta.ID),
+			zap.String("traceId", meta.TraceID),
+			zap.String("spanId", span.SpanContext().SpanID().String()),
+			zap.Error(err))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to unmarshal event data")
-		return platform.ResultNack
+		return platform.ResultAck
 	}
 
 	span.SetAttributes(
@@ -118,25 +136,24 @@ func (h *EventHander) Handle(ctx context.Context, data []byte, attrs map[string]
 	)
 
 	if err := h.i.ProcessUpload(ctx, meta, &eventData); err != nil {
-		h.logger.Error("ProcessUpload failed",
-			zap.String("eventId", meta.ID),
-			zap.String("traceId", meta.TraceID),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.Error(err))
-		return h.respondWithError(err, span)
+		return h.respondWithError(err, span, meta, messageId)
 	}
 
+	span.SetStatus(codes.Ok, "event processed")
 	span.AddEvent("event.processed", otrace.WithAttributes(
 		attribute.String("event.id", meta.ID),
 	))
 
-	h.logger.Info("Successfully processed event",
+	h.logger.Info("successfully processed event",
+		zap.String("component", "handler.event"),
+		zap.String("action", "process_event"),
+		zap.String("outcome", "success"),
+		zap.String("messageId", messageId),
 		zap.String("eventId", meta.ID),
 		zap.String("traceId", meta.TraceID),
 		zap.String("spanId", span.SpanContext().SpanID().String()))
 
 	return platform.ResultAck
-
 }
 
 func parseCloudEventMeta(attrs map[string]string) (*dto.MetaData, error) {
@@ -174,170 +191,89 @@ func parseCloudEventMeta(attrs map[string]string) (*dto.MetaData, error) {
 	}, nil
 }
 
-func (h *EventHander) respondWithError(err error, span otrace.Span) platform.Result {
-	if span != nil && span.IsRecording() {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+// respondWithError inspects the error returned by the service layer and maps
+// it to the appropriate Pub/Sub result:
+//   - PermanentError   -> ACK  (do not retry)
+//   - IdempotencyError -> ACK  (already processed, acknowledge to stop retries)
+//   - TransientError   -> NACK (retry via Pub/Sub redelivery)
+//   - Unknown errors   -> NACK (treat as transient — retry by default)
+func (h *EventHandler) respondWithError(err error, span otrace.Span, meta *dto.MetaData, messageId string) platform.Result {
+	logFields := []zap.Field{
+		zap.String("component", "handler.event"),
+		zap.String("action", "classify_error"),
+		zap.String("messageId", messageId),
+		zap.String("eventId", meta.ID),
+		zap.String("traceId", meta.TraceID),
+		zap.Error(err),
+	}
+	if span != nil {
+		logFields = append(logFields, zap.String("spanId", span.SpanContext().SpanID().String()))
 	}
 
+	var permErr *apperror.PermanentError
+	var idempErr *apperror.IdempotencyError
+	var transErr *apperror.TransientError
+
 	switch {
-	case errors.Is(err, validation.ErrPathInjection),
-		errors.Is(err, validation.ErrInvalidObjectPath),
-		errors.Is(err, validation.ErrInvalidUUID),
-		errors.Is(err, validation.ErrUnexpectedEventType),
-		errors.Is(err, validation.ErrInvalidTimestamp),
-		errors.Is(err, validation.ErrInvalidJSON),
-		errors.Is(err, validation.ErrStaleEvent),
-		errors.Is(err, validation.ErrUnexpectedBucket),
-		errors.Is(err, validation.ErrFileTooSmall),
-		errors.Is(err, validation.ErrFileTooLarge),
-		errors.Is(err, validation.ErrUnsupportedFormat):
+	case errors.As(err, &permErr):
 		if span != nil && span.IsRecording() {
-			span.AddEvent("validation.error.ack", otrace.WithAttributes(
+			span.SetStatus(codes.Error, "permanent error")
+			span.RecordError(err)
+			span.AddEvent("permanent.error.ack", otrace.WithAttributes(
 				attribute.String("error", err.Error()),
 			))
 		}
-		h.logger.Warn("Validation error, ACKing message",
-			zap.Error(err))
+		h.logger.Warn("permanent error, ACKing message",
+			append(logFields, zap.String("outcome", "ack"))...,
+		)
 		return platform.ResultAck
 
-	case errors.Is(err, repository.ErrAlreadProcessed):
+	case errors.As(err, &idempErr):
 		if span != nil && span.IsRecording() {
+			span.SetStatus(codes.Ok, "idempotent duplicate")
 			span.AddEvent("idempotency.conflict.ack", otrace.WithAttributes(
 				attribute.String("error", err.Error()),
 			))
 		}
-		h.logger.Warn("Idempotency conflict - video already processed, ACKing",
-			zap.Error(err))
+		h.logger.Info("idempotent duplicate detected, ACKing message",
+			append(logFields, zap.String("outcome", "ack"))...,
+		)
 		return platform.ResultAck
 
-	case isGCSObjectNotFound(err):
+	case errors.As(err, &transErr):
 		if span != nil && span.IsRecording() {
-			span.AddEvent("gcs.object.not_found.ack", otrace.WithAttributes(
+			span.SetStatus(codes.Error, "transient error")
+			span.RecordError(err)
+			span.AddEvent("transient.error.nack", otrace.WithAttributes(
 				attribute.String("error", err.Error()),
 			))
 		}
-		h.logger.Warn("GCS object not found, ACKing",
-			zap.Error(err))
-		return platform.ResultAck
-
-	case isGCSTransientError(err):
-		if span != nil && span.IsRecording() {
-			span.AddEvent("gcs.transient.error.nack", otrace.WithAttributes(
-				attribute.String("error", err.Error()),
-			))
-		}
-		h.logger.Error("GCS transient error, NACKing",
-			zap.Error(err))
-		return platform.ResultNack
-
-	case isFirestoreTransientError(err):
-		if span != nil && span.IsRecording() {
-			span.AddEvent("firestore.transient.error.nack", otrace.WithAttributes(
-				attribute.String("error", err.Error()),
-			))
-		}
-		h.logger.Error("Firestore transient error, NACKing",
-			zap.Error(err))
-		return platform.ResultNack
-
-	case isFirestorePermanentError(err):
-		if span != nil && span.IsRecording() {
-			span.AddEvent("firestore.permanent.error.ack", otrace.WithAttributes(
-				attribute.String("error", err.Error()),
-			))
-		}
-		h.logger.Error("Firestore permanent error, ACKing",
-			zap.Error(err))
-		return platform.ResultAck
-
-	case errors.Is(err, repository.ErrTransientError):
-		if span != nil && span.IsRecording() {
-			span.AddEvent("cloudtask.transient.error.nack", otrace.WithAttributes(
-				attribute.String("error", err.Error()),
-			))
-		}
-		h.logger.Error("Cloud Tasks transient error, NACKing",
-			zap.Error(err))
-		return platform.ResultNack
-
-	case isCloudTaskAlreadyExists(err):
-		if span != nil && span.IsRecording() {
-			span.AddEvent("cloudtask.already_exists.ack", otrace.WithAttributes(
-				attribute.String("error", err.Error()),
-			))
-		}
-		h.logger.Warn("Cloud Task already exists, ACKing",
-			zap.Error(err))
-		return platform.ResultAck
-
-	case errors.Is(err, repository.ErrNonRetryableError):
-		if span != nil && span.IsRecording() {
-			span.AddEvent("cloudtask.permanent.error.ack", otrace.WithAttributes(
-				attribute.String("error", err.Error()),
-			))
-		}
-		h.logger.Error("Cloud Tasks permanent error, ACKing",
-			zap.Error(err))
-		return platform.ResultAck
-
-	case errors.Is(err, context.Canceled):
-		if span != nil && span.IsRecording() {
-			span.AddEvent("context.cancelled.nack", otrace.WithAttributes(
-				attribute.String("error", err.Error()),
-			))
-		}
-		h.logger.Warn("Context cancelled, NACKing",
-			zap.Error(err))
+		h.logger.Error("transient error, NACKing message",
+			append(logFields, zap.String("outcome", "nack"))...,
+		)
 		return platform.ResultNack
 
 	default:
+		// Unknown error type — treat as transient to allow Pub/Sub to retry.
 		if span != nil && span.IsRecording() {
+			span.SetStatus(codes.Error, "unexpected error")
+			span.RecordError(err)
 			span.AddEvent("unknown.error.nack", otrace.WithAttributes(
 				attribute.String("error", err.Error()),
 			))
 		}
-		h.logger.Error("Unknown error, NACKing",
-			zap.Error(err))
+
+		// Check for context cancellation as a special transient case.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			h.logger.Warn("context cancelled, NACKing message",
+				append(logFields, zap.String("outcome", "nack"))...,
+			)
+			return platform.ResultNack
+		}
+
+		h.logger.Error("unexpected error, NACKing message",
+			append(logFields, zap.String("outcome", "nack"))...,
+		)
 		return platform.ResultNack
 	}
-}
-
-func isGCSObjectNotFound(err error) bool {
-	if errors.Is(err, storage.ErrObjectNotExist) {
-		return true
-	}
-	return strings.Contains(err.Error(), "object not found")
-}
-
-func isGCSTransientError(err error) bool {
-	if errors.Is(err, storage.ErrBucketNotExist) {
-		return false
-	}
-	code := status.Code(err)
-	return code == grpccodes.Unavailable ||
-		code == grpccodes.DeadlineExceeded ||
-		code == grpccodes.ResourceExhausted
-}
-
-func isFirestoreTransientError(err error) bool {
-	code := status.Code(err)
-	return code == grpccodes.Unavailable ||
-		code == grpccodes.DeadlineExceeded ||
-		code == grpccodes.ResourceExhausted ||
-		code == grpccodes.Aborted ||
-		code == grpccodes.Internal
-}
-
-func isFirestorePermanentError(err error) bool {
-	code := status.Code(err)
-	return code == grpccodes.PermissionDenied ||
-		code == grpccodes.NotFound ||
-		code == grpccodes.InvalidArgument ||
-		code == grpccodes.Unauthenticated
-}
-
-func isCloudTaskAlreadyExists(err error) bool {
-	code := status.Code(err)
-	return code == grpccodes.AlreadyExists
 }

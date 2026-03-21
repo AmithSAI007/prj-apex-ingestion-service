@@ -10,18 +10,23 @@ import (
 )
 
 // NewLogger creates a configured zap.Logger based on the APP_ENV environment
-// variable. In "production" mode it outputs structured JSON to stdout and a
-// file. In all other modes it outputs colorized, human-readable console logs
+// variable. In "production" mode it outputs structured JSON to stdout.
+// In all other modes it outputs colorized, human-readable console logs
 // at Info level and above.
-func NewLogger(appEnv string) (*zap.Logger, error) {
+//
+// The serviceName parameter is added as a base field to every log entry,
+// making it possible to distinguish logs from different services when they
+// are routed to a shared sink (e.g., BigQuery).
+func NewLogger(appEnv string, serviceName string) (*zap.Logger, error) {
 	var logger *zap.Logger
 	var err error
 
 	if os.Getenv(appEnv) != "local" {
-		// Production: structured JSON format, writing to both stdout and app.log.
+		// Production: structured JSON format to stdout only.
+		// Cloud Run captures stdout; writing to ephemeral files is avoided.
 		cfg := zap.NewProductionConfig()
-		cfg.OutputPaths = []string{"stdout", "app.log"}
-		cfg.ErrorOutputPaths = []string{"stderr", "app.log"}
+		cfg.OutputPaths = []string{"stdout"}
+		cfg.ErrorOutputPaths = []string{"stderr"}
 		cfg.EncoderConfig.LevelKey = "severity"
 		cfg.EncoderConfig.EncodeLevel = func(l zapcore.Level, enc zapcore.PrimitiveArrayEncoder) {
 			severity := strings.ToUpper(l.CapitalString())
@@ -30,7 +35,9 @@ func NewLogger(appEnv string) (*zap.Logger, error) {
 			}
 			enc.AppendString(severity)
 		}
-		logger, err = cfg.Build()
+		logger, err = cfg.Build(
+			zap.Fields(zap.String("service", serviceName)),
+		)
 	} else {
 		// Development: colorized console output with RFC3339 timestamps for readability.
 		config := zap.NewDevelopmentEncoderConfig()
@@ -41,7 +48,9 @@ func NewLogger(appEnv string) (*zap.Logger, error) {
 			zapcore.NewConsoleEncoder(config),
 			zapcore.NewMultiWriteSyncer(zapcore.AddSync(os.Stdout)),
 			zap.InfoLevel,
-		))
+		),
+			zap.Fields(zap.String("service", serviceName)),
+		)
 	}
 
 	if err != nil {

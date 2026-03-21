@@ -30,7 +30,9 @@ func main() {
 	}
 
 	// Initialize the structured logger (JSON in production, console in development).
-	logger, err := config.NewLogger(cfg.AppEnv)
+	// The service name is added as a base field so logs from this service can be
+	// identified when routed to a shared audit sink (e.g., BigQuery).
+	logger, err := config.NewLogger(cfg.AppEnv, cfg.OTEL_SERVICE_NAME)
 	if err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}

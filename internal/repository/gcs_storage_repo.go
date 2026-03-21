@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
@@ -12,6 +13,8 @@ import (
 	otrace "go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
+
+var ErrObjectNotFound = errors.New("GCS object not found")
 
 type StorageService struct {
 	client *storage.Client
@@ -30,7 +33,6 @@ func (s *StorageService) ReadObjectHeader(ctx context.Context, eventId, traceId,
 	ctx, span := tracer.Start(ctx, "StorageService.ReadObjectHeader",
 		otrace.WithSpanKind(otrace.SpanKindClient),
 		otrace.WithAttributes(
-			attribute.String("operation", "ReadObjectHeader"),
 			attribute.String("eventId", eventId),
 			attribute.String("traceId", traceId),
 			attribute.String("userId", userId),
@@ -41,42 +43,40 @@ func (s *StorageService) ReadObjectHeader(ctx context.Context, eventId, traceId,
 		))
 	defer span.End()
 
+	logFields := []zap.Field{
+		zap.String("component", "repository.gcs"),
+		zap.String("action", "read_object_header"),
+		zap.String("eventId", eventId),
+		zap.String("traceId", traceId),
+		zap.String("spanId", span.SpanContext().SpanID().String()),
+		zap.String("userId", userId),
+		zap.String("videoId", videoId),
+		zap.String("bucket", bucket),
+		zap.String("objectName", objectName),
+	}
+
 	rc, err := s.client.Bucket(bucket).Object(objectName).NewRangeReader(ctx, 0, numBytes)
 	if err != nil {
 		if err == storage.ErrObjectNotExist {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "GCS object not found")
-			span.AddEvent("object.notFound", otrace.WithAttributes(
-				attribute.String("error", err.Error()),
-			))
-			s.logger.Error("GCS object not found",
-				zap.String("eventId", eventId),
-				zap.String("traceId", traceId),
-				zap.String("spanId", span.SpanContext().SpanID().String()),
-				zap.String("userId", userId),
-				zap.String("videoId", videoId),
-
-				zap.String("bucket", bucket),
-				zap.String("object", objectName),
-				zap.Error(err))
-			return nil, fmt.Errorf("object not found: gs://%s/%s: %w", objectName, bucket, err)
+			s.logger.Warn("GCS object not found",
+				append(logFields,
+					zap.String("outcome", "failure"),
+					zap.Error(err),
+				)...,
+			)
+			return nil, fmt.Errorf("object not found gs://%s/%s: %w", bucket, objectName, ErrObjectNotFound)
 		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to open GCS object")
-		span.AddEvent("open.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
 		s.logger.Error("Failed to open GCS object",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.String("bucket", bucket),
-			zap.String("object", objectName),
-			zap.Error(err))
-		return nil, fmt.Errorf("failed to open GCS object: gs://%s/%s: %w", objectName, bucket, err)
+			append(logFields,
+				zap.String("outcome", "failure"),
+				zap.Error(err),
+			)...,
+		)
+		return nil, fmt.Errorf("gcs open object gs://%s/%s: %w", bucket, objectName, err)
 	}
 
 	defer func() { _ = rc.Close() }()
@@ -85,20 +85,13 @@ func (s *StorageService) ReadObjectHeader(ctx context.Context, eventId, traceId,
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to read GCS object header")
-		span.AddEvent("read.failed", otrace.WithAttributes(
-			attribute.String("error", err.Error()),
-		))
 		s.logger.Error("Failed to read GCS object header",
-			zap.String("eventId", eventId),
-			zap.String("traceId", traceId),
-			zap.String("spanId", span.SpanContext().SpanID().String()),
-			zap.String("userId", userId),
-			zap.String("videoId", videoId),
-
-			zap.String("bucket", bucket),
-			zap.String("object", objectName),
-			zap.Error(err))
-		return nil, fmt.Errorf("failed to read GCS object header: gs://%s/%s: %w", objectName, bucket, err)
+			append(logFields,
+				zap.String("outcome", "failure"),
+				zap.Error(err),
+			)...,
+		)
+		return nil, fmt.Errorf("gcs read object gs://%s/%s: %w", bucket, objectName, err)
 	}
 
 	span.AddEvent("header.read", otrace.WithAttributes(
@@ -106,14 +99,11 @@ func (s *StorageService) ReadObjectHeader(ctx context.Context, eventId, traceId,
 	))
 
 	s.logger.Info("Successfully read GCS object header",
-		zap.String("eventId", eventId),
-		zap.String("traceId", traceId),
-		zap.String("spanId", span.SpanContext().SpanID().String()),
-		zap.String("userId", userId),
-		zap.String("videoId", videoId),
-		zap.String("bucket", bucket),
-		zap.String("object", objectName),
-		zap.Int("headerSize", len(header)))
+		append(logFields,
+			zap.String("outcome", "success"),
+			zap.Int("headerSize", len(header)),
+		)...,
+	)
 
 	return header, nil
 }

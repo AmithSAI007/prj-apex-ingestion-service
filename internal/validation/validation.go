@@ -2,7 +2,6 @@ package validation
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -66,10 +65,10 @@ func (v *Validator) validateNoPathInjection(name string) error {
 
 func (v *Validator) ValidatePathSegment(field, value string) error {
 	if !v.validateUUID(value) {
-		return errors.New("invalid " + field + ": must be a valid UUID")
+		return fmt.Errorf("invalid %s: %w", field, ErrInvalidUUID)
 	}
 	if err := v.validateNoPathInjection(value); err != nil {
-		return errors.New("invalid " + field + ": " + err.Error())
+		return fmt.Errorf("invalid %s: %w", field, err)
 	}
 	return nil
 }
@@ -77,7 +76,7 @@ func (v *Validator) ValidatePathSegment(field, value string) error {
 func (v *Validator) ParseObjectPath(name string) (UserID, VideoID, fileName string, err error) {
 	parts := strings.SplitN(name, "/", 3)
 	if len(parts) != 3 {
-		return "", "", "", errors.New("object name must have the format userId/videoId/fileName")
+		return "", "", "", fmt.Errorf("object name must have the format userId/videoId/fileName: %w", ErrInvalidObjectPath)
 	}
 	userId, videoId, fileName := parts[0], parts[1], parts[2]
 	return userId, videoId, fileName, nil

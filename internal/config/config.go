@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -24,6 +25,12 @@ type Config struct {
 	GCSBucket string `mapstructure:"GCS_BUCKET"`
 	// OTEL_SERVICE_NAME is the logical service name reported to the OpenTelemetry collector.
 	OTEL_SERVICE_NAME string `mapstructure:"OTEL_SERVICE_NAME"`
+	// OtelExporterOtlpEndpoint is the OTLP collector endpoint URL (e.g., "https://telemetry.googleapis.com").
+	OtelExporterOtlpEndpoint string `mapstructure:"OTEL_EXPORTER_OTLP_ENDPOINT"`
+	// OtelExporterOtlpHeaders are the headers to include when exporting traces to an OTLP endpoint.
+	OtelExporterOtlpHeaders string `mapstructure:"OTEL_EXPORTER_OTLP_HEADERS"`
+	// OtelResourceAttributes is a comma-separated list of key=value pairs to set as resource attributes on all traces.
+	OtelResourceAttributes string `mapstructure:"OTEL_RESOURCE_ATTRIBUTES"`
 
 	MaxFileSizeBytes    int64    `mapstructure:"MAX_FILE_SIZE_BYTES"`
 	MinFileSizeBytes    int64    `mapstructure:"MIN_FILE_SIZE_BYTES"`
@@ -86,6 +93,23 @@ func LoadConfig(path string) (*Config, error) {
 	var config Config
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, fmt.Errorf("unable to decode into struct, %w", err)
+	}
+
+	// Propagate OTEL configuration into the OS environment so the OpenTelemetry
+	// SDK (which reads env vars directly) picks them up. Viper does not call
+	// os.Setenv, so without this the SDK would not see values from config.yaml.
+	otelEnvVars := map[string]string{
+		"OTEL_SERVICE_NAME":           config.OTEL_SERVICE_NAME,
+		"OTEL_EXPORTER_OTLP_ENDPOINT": config.OtelExporterOtlpEndpoint,
+		"OTEL_EXPORTER_OTLP_HEADERS":  config.OtelExporterOtlpHeaders,
+		"OTEL_RESOURCE_ATTRIBUTES":    config.OtelResourceAttributes,
+	}
+	for k, v := range otelEnvVars {
+		if v != "" {
+			if err := os.Setenv(k, v); err != nil {
+				return nil, fmt.Errorf("failed to set env var %s: %w", k, err)
+			}
+		}
 	}
 
 	return &config, nil

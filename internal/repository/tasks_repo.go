@@ -36,20 +36,6 @@ func NewTasksRepo(logger *zap.Logger, client *cloudtasks.Client, cfg *config.Con
 	}
 }
 
-// headerCarrier adapts a map[string]string for use as an OTel TextMapCarrier,
-// allowing trace context to be injected into HTTP headers for Cloud Tasks.
-type headerCarrier map[string]string
-
-func (c headerCarrier) Get(key string) string { return c[key] }
-func (c headerCarrier) Set(key, value string) { c[key] = value }
-func (c headerCarrier) Keys() []string {
-	keys := make([]string, 0, len(c))
-	for k := range c {
-		keys = append(keys, k)
-	}
-	return keys
-}
-
 func (r *CloudTasksRepo) EnqueueTranscodeTask(ctx context.Context, payload *dto.TranscoderServicePayload) error {
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-ingestion-service")
 	ctx, span := tracer.Start(ctx, "CloudTasksRepo.EnqueueTranscodeTask",
